@@ -3,10 +3,12 @@ package CGI::Uploader;
 use 5.005;
 use strict;
 use CGI::Carp;
+use CGI;
+use Params::Validate qw/:all/;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '0.30_01';
+$VERSION = '0.40_01';
 
 =pod
 
@@ -16,28 +18,14 @@ CGI::Uploader - Manage CGI uploads using SQL database
 
 =head1 SYNOPSIS
 
- # Define your upload form field names as hash keys along with
- # any thumbnails they might need, and their max width and heights.
-
- my %Uploads = (
- 	img_1 => {
-		thumbs => [
-			{ name => 'img_1_thumb_1', w => 100, h => 100 }, 
-			{ name => 'img_1_thumb_2', w => 50 , h => 50  }, 
- 		],
-	},
-
-	# A simple syntax if you just want some thumbnails
- 	img_2 => [
- 		{ name => 'img_2_thumb_1', w => 100, h => 100 },
- 	],
-
-	# And a very simple syntax if you want to store the file untouched. 
- 	img_3 => [],
- );
- 
  my $u = CGI::Uploader->new(
- 	spec       => \%Uploads,
+ 	spec       => {
+        # Upload one image named from the form field 'img' 
+        # and create one thumbnail for it. 
+        img => [
+            { name => 'img_thumb_1', w => 100, h => 100 },
+        ],
+    }
 
  	updir_url  => 'http://localhost/uploads',
  	updir_path => '/home/user/www/uploads',
@@ -48,71 +36,188 @@ CGI::Uploader - Manage CGI uploads using SQL database
 
  # ... now do something with $u
 
-updir_url and updir_path should not include a trailing slash.
-
 =head1 DESCRIPTION
 
 This module is designed to help with the task of managing files uploaded
 through a CGI application. The files are stored on the file system, and
 the file attributes stored in a SQL database. 
 
-It expects that you have a SQL table dedicated to describing uploads, designed like this:
+=head1 EXAMPLE SETUP
 
-	-- Note the MySQL specific syntax here
-	create table uploads (
-		upload_id	int AUTO_INCREMENT primary key not null,
+This module provides some glue between a web form and a SQL database.
+Here's a simple form that could be used with this module:
+
+=head2 EXAMPLE FORM
+
+ <form enctype="multipart/form-data">
+    Friend Name: <input type="text" name="full_name"> <br />
+    Image: <input type="file" name="photo">
+    <input type="submit">
+ </form>
+
+Notice that the 'enctype' is important for file uploads to work.
+
+So we have a text field for a 'friend_name' and a file upload field named
+'photo'.  
+
+=head2 EXAMPLE DATABASE 
+
+To continue with the example above, we'll define two tables, one 
+will store file upload meta data. This can be used to store the information
+about file uploads related to any number of tables. However, only one other table 
+is required. For our example, we'll create an table to hold names and photos of 
+friends:
+
+	-- Note the Postgres specific syntax here
+    CREATE SEQUENCE upload_id_seq;
+	CREATE TABLE uploads (
+		upload_id	int primary key not null default nextval('upload_id_seq'),
 		mime_type   character varying(64),
 		extension   character varying(8), -- file extension
 		width       integer,                 
 		height      integer
 	)
 
-For Postgres, a sequence is also required. This can be named
-in the constructor, or the default of C<upload_id_seq> will be used. 
-
-Sample SQL scripts are included in the distribution to create such tables.
-
-Other table names are allowed, but at least these fields must be present
-in the table.
-
-The expectation is that these file uploads will be related to 
-at least one other entity in the database. Tables which reference 
-the uploads table can do so with any column name that ends in '_id'.
-Column definitions to store photos with an addressbook might look like this:
-
  CREATE TABLE address_book (
     friend_id          int primary key,
-    name               varchar(64),
-    photo_id            int,
-    photo_thumbnail_id  int
+    full_name               varchar(64),
+
+    -- these two reference uploads('upload_id'),
+    photo_id            int,  
+    photo_thumbnail_id  int 
  );
+    
+I<MySQL is also supported. Check in the distribution for a sample SQL 'Create'
+scripts for both database.>.
+
+=head2 EXAMPLE FORM VALIDATION
+
+Finally, this module is designed to work with L<Data::FormValidator|Data::FormValidator>, which can 
+provide sophisticated validation of file uploads. The Data::FormValidator profile to validate
+the above form might look like this:
+
+ {
+    validator_packages => [qw(Data::FormValidator::Constraints::Upload)],
+    required => [qw/full_name photo/],
+           constraints => {
+               photo => [
+                   {   
+                       constraint_method => 'file_format',
+                       params => [{
+                            mime_types => [qw!image/jpeg image/png!],
+                        }],
+                   },
+                   {   
+                       constraint_method => 'file_max_bytes',
+                       params => [\1000],
+                   },
+                   {   
+                       constraint_method => 'image_max_dimensions',
+                       params => [\200,\200],
+                   },
+
+            ],
+     }
+ }
+
+Not only does Data::FormValidator validate the file, it also discovers
+meta data in the process, which we will be storing.
+
+=head2 EXAMPLE RESULT
+
+Here's our end result: 
+
+ address_book table:
+  
+ friend_id | full_name | photo_id | photo_thumbnail_id 
+ -----------------------------------------------------
+ 2         | M. Lewis  |        3 |                 4 
+
+
+ uploads table:
+
+ upload_id | mime_type | extension | width | height |
+ ----------------------------------------------------
+ 3         | image/png | .png      |  200  | 400   |    
+ 4         | image/png | .png      |   50  | 100    |    
+
+The files are stored on the file system:  
+
+ /home/friends/www/uploads/3.png
+ /home/friends/www/uploads/4.png
+
+
+=head2 EXAMPLE CODE
+
+To accomplish something like the above, we first need to provide a upload
+specification. This declares all the file form upload fields we will use, as
+well as details of the thumbnails we will create based on these. 
+
+These names need to be identical to the database column names that refer to
+these images, with one difference. In the database, '_id' needs to be added to
+the end of the name. So a form field named 'photo' is referenced a database
+column of 'photo_id'.
+
+ # The same object can be used when inserting, updating, deleting and selecting
+ # the uploads.
+
+ my $u = CGI::Uploader->new(
+ 	spec => {
+        photo => [
+            { name => 'photo_thumbnail', w => 100, h => 100, }
+        ],
+    }
+
+ 	updir_url  => 'http://localhost/uploads',
+ 	updir_path => '/home/friends/www/uploads',
+ 	dbh	       => $dbh,	
+
+ );
+
+ # ... validate with Data::FormValidator as above to get $results
+
+ my $friend = $u->store_uploads($results);
+
+ # Now the $friend hash been transformed so it can easily inserted
+ # It now looks like this:
+ # {
+ #    full_name => 'M. Lewis',
+ #    photo_id => 3,
+ #    photo_thumbnail_id => 4,
+ # }
+
+ # I like to use SQL::Abstract for easy inserts.
+
+ use SQL::Abstract;
+ my $sql = SQL::Abstract->new;
+ my($stmt, @bind) = $sql->insert('address_book',$friend);
+ $dbh->do($stmt,{},@bind);
+
+
+That's a basic example. Read on for more details about what's possible,
+including convenient functions to also help with updating, deleting, and linking
+to the upload.
+
+=cut
+
+=pod
 
 =head1 METHODS
 
 =head2 new()
 
-To create the object, provide a specification the tells what field names are
-for files you want to manage, and the details any thumbnails that will be
-created for these files (if they are images). Here the file names are given
-without the "_id" part:
-
- my %Uploads = {
- 	img_1 => [
-        # The first image has 2 different sized thumbnails 
-        # that need to be created.
- 		{ name => 'img_1_thumb_1', w => 100, h => 100 }, 
- 		{ name => 'img_1_thumb_2', w => 50 , h => 50  }, 
- 		],
- 	img_2 => [
- 		{ name => 'img_2_thumb_1', w => 100, h => 100 },
- 	],
- 	img_3 => [],
- };
-
-The C<new()> constructor accepts the attributes described here:
-
  my $u = CGI::Uploader->new(
- 	spec       => \%Uploads,
+ 	spec       => {
+        img_1 => [
+            # The first image has 2 different sized thumbnails 
+            # that need to be created.
+            { name => 'img_1_thumb_1', w => 100, h => 100 }, 
+            { name => 'img_1_thumb_2', w => 50 , h => 50  }, 
+            ],
+
+        # No thumbnails
+        img_2 => [],
+    },
 
  	updir_url  => 'http://localhost/uploads',
  	updir_path => '/home/user/www/uploads',
@@ -128,15 +233,24 @@ The C<new()> constructor accepts the attributes described here:
 
 =item spec
 
-The spec described above. Required.
+The spec described above. Required. The keys correspond to form field names 
+for upload fields. The values are array references. The simplest case is for the array
+to be empty, which means no thumbnails will be created. For non-image types,  
+thumbnails don't make sense away. Each element in the array is a hash reference
+with the following keys: 'name', 'w', 'h'. These correspond to the name, max width, and max height
+of the thumbnail.
+
+The name will correspond to a database field that that references that the thumbnails 
+meta data. See the EXAMPLE SETUP above for an example.
+
 
 =item updir_url
 
-URL to upload storage directory. Required.
+URL to upload storage directory. Required. Should not include a trailing slash.
 
 =item updir_path
 
-File system path to upload storage directory. Required.
+File system path to upload storage directory. Required. Should not include a trailing slash.
 
 =item dbh
 
@@ -164,8 +278,6 @@ Defaults to C<upload_id_seq> if omitted.
 
 =cut
 
-use Params::Validate qw/:all/;
-use CGI;
 
 sub new {
 	my $proto = shift;
@@ -201,7 +313,6 @@ sub new {
 }
 
 
-
 =pod 
 
 
@@ -232,17 +343,21 @@ populated if that meta data is available.
 
 =back
 
-As input, a L<Data::FormValidator::Results|Data::FormValidator::Results> object is expected.
-Furthermore, the L<Data::FormValidator::Constraints::Upload|Data::FormValidator::Constraints::Upload> module
-is expected to have been used to the generate meta data that
-will be used.
+As input, a L<Data::FormValidator::Results|Data::FormValidator::Results> object
+is required.  Furthermore, the
+L<Data::FormValidator::Constraints::Upload|Data::FormValidator::Constraints::Upload>
+module is expected to have been used to the generate meta data that will be
+used. To provide the meta data from another source, use the meta() method
+of the L<Data::FormValidator::Results|Data::FormValidator::Results> object.
 
-The expection is that you are validating some entity which has some files
-attached to it.
+CGI::Uploader is designed to handle uploads that are included as a part 
+of an add/edit form for an entity stored in a database. So, the <$results> 
+object is expected to contain additional data for this entity as well
+as the file upload fields.
 
-It returns a hash reference of the valid data with some transformations.
-File upload fields will be removed from the hash, and corresponding "_id"
-fields will be added.
+For this reason, the C<store_uploads> method returns a hash reference of the
+valid data with some transformations.  File upload fields will be removed from
+the hash, and corresponding "_id" fields will be added.
 
 So for a file upload field named 'img_field',  the 'img_field' key
 will be removed from the hash and 'img_field_id' will be added, with
@@ -384,16 +499,11 @@ sub delete_upload {
 
 =head2 meta_hashref()
 
-	my $tmpl_vars_ref = $u->meta_hashref($table,\%where,@prefixes);
+	my $href = $u->meta_hashref($table,\%where,@prefixes);
 
-This method is used to return a hash reference suitable for sending to HTML::Template.
-Here's an example:
-
-	my $tmpl_vars_ref = $u->meta_hashref('news',{ item_id => 23 },qw/file_1/);
-
-This is going to fetch the file information from the upload table for using the row 
-where news.item_id = 23 AND news.file_1_id = uploads.upload_id.
-The result might look like this:
+Returns a hash reference of information about the file, useful for 
+passing to a templating system. Here's an example of what the contents 
+of C<$href> might look like:
 
 	{
 		file_1_id     => 523,
@@ -403,6 +513,15 @@ The result might look like this:
 If the files happen to be images and have their width and height
 defined in the database row, template variables will be made
 for these as well. 
+
+Here's an example syntax of calling the function:
+
+	my $href = $u->meta_hashref('news',{ item_id => 23 },qw/file_1/);
+
+This is going to fetch the file information from the upload table for using the row 
+where news.item_id = 23 AND news.file_1_id = uploads.upload_id.
+The result might look like this:
+
 
 The C<%where> hash mentioned here is a L<SQL::Abstract|SQL::Abstract> where clause. The
 complete SQL that used to fetch the data will be built like this:
@@ -614,6 +733,12 @@ __END__
 =head1 AUTHOR
 
 Mark Stosberg <mark@summersault.com>
+
+=head1 THANKS
+
+A special thanks to David Manura for his detailed and persistent feedback in 
+the early days, when the documentation was wild and rough.
+
 
 =head1 LICENSE 
 

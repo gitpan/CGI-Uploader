@@ -1,5 +1,8 @@
 Revision history for Perl extension CGI::Uploader.
 
+0.40_01 Sun Feb 8, 2004
+    - Extensive documentation updates, thanks to feedback from David Manura.
+
 0.30_01 Fri Feb 6, 2004 
     - The API was largely re-worked, with several methods renamed and a few
       added. No backwards compatibility can be expected. 
