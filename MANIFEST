@@ -1,0 +1,11 @@
+Changes
+MANIFEST
+Makefile.PL
+create_uploader_table.Pg.sql
+create_uploader_table.mysql.sql
+lib/CGI/Uploader.pm
+t/01-basic.t
+t/cgi-uploader.config
+t/create_test_table.sql
+t/upload_post_text.txt
+t/pod.t

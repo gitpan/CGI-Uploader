@@ -1,0 +1,27 @@
+Revision history for Perl extension CGI::Uploader.
+
+0.30_01 Fri Feb 6, 2004 
+    - The API was largely re-worked, with several methods renamed and a few
+      added. No backwards compatibility can be expected. 
+
+0.10  
+	[THINGS THAT MIGHT BREAK YOUR CODE]
+	- create_img_tmpl_vars() has been replaced
+	  with a more generic create_tmpl_vars(). 
+	  It should still work the same for images,
+	  and better for non-images
+
+	- install_uploads() Now returns a hash ref 
+	based on the valid hash, with appropriate additions
+	and deletions already made.
+
+    - The interface for delete_upload() has changed to accomodate
+	deleting based on directly providing a upload ID.
+
+0.02  Sun May 18 2003
+	- initial public release
+
+0.01  Sat May 17 16:15:05 2003
+	- original version; created by h2xs 1.22 with options
+		-b 5.5.0 -XAn CGI::Uploader
+
