@@ -9,8 +9,11 @@ use strict;
 
 BEGIN { use_ok('CGI::Uploader') };
 BEGIN { use_ok('DBI') };
-BEGIN { use_ok('CGI') };
-
+BEGIN { 
+    use_ok('CGI');
+    use_ok('Image::Magick');
+    use_ok('CGI::Uploader::Transform::ImageMagick');
+};
 
 my $q = new CGI;
 
@@ -51,9 +54,14 @@ SKIP: {
      $DBH->do("ALTER TABLE uploads ADD COLUMN custom char(64)");
 
 	 my %imgs = (
-		'img_1' => [
-			{ name => 'img_1_thumb', w => 50, h => 60 },
-            ],
+		'img_1' => {
+            gen_files => {
+                img_1_thumb => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 50, h => 60 }],
+                },
+            },
+        },
 	 );
 
 	 my $u = 	CGI::Uploader->new(

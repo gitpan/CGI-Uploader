@@ -1,5 +1,31 @@
 Revision history for Perl extension CGI::Uploader.
 
+0.80_01
+    [RELEASE NOTES]
+    I changed the API again. The code has been refactored to remove all
+    image-specific code from the main package. In it's place a more general 
+    "transform_method" option has been added. With this, you can specify 
+    any arbitrary transformation you want to make to a file.  You might 
+    choose to decrypt a file, compress it, append to it, or otherwise alter
+    it. 
+
+    The thumbnailing code still exists, but has been moved to
+    CGI::Uploader::Transform::ImageMagick::gen_thumb().
+
+    However, most of the examples and tests still do rely on "gen_thumb()" for
+    examples, so test failures will occur if Image::Magick is not installed for
+    now. I'd like some help to streamline this. 
+
+    Along the way, I removed the regular expression support to simplify the
+    refactoring. It may well come back. 
+
+    Beyond these changes, things are pretty much the same. Let me know
+    if you have any feedback on the API before this turns into a stable
+    1.0 release.
+
+    Mark Stosberg
+    mark@summersault.com
+
 0.76.02
 	[ENHANCEMENTS]
 	- Added image gallery recipe to cookbook

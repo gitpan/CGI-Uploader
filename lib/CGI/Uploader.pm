@@ -12,7 +12,7 @@ use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '0.76_02';
+$VERSION = '0.80_01';
 
 =head1 NAME
 
@@ -20,14 +20,21 @@ CGI::Uploader - Manage CGI uploads using SQL database
 
 =head1 Synopsis
 
+ use CGI::Uploader::Transform::ImageMagick (qw/gen_thumb/);
+
  my $u = CGI::Uploader->new(
  	spec       => {
         # Upload one image named from the form field 'img' 
         # and create one thumbnail for it. 
-        img => [
-            { name => 'img_thumb_1', w => 100, h => 100 },
-        ],
-    }
+        img_1 => {                                                                                                                             
+            gen_files => {                                                                                                                
+                'img_1_thmb_1' => {                                                                                             
+                    transform_method => \&gen_thumb,                                                                    
+                    params => [ w => 100, h => 100 ],                                                             
+                  }                                                                                                         
+              }                                                                                                                
+        },                                                                                                                            
+    },                
 
  	updir_url  => 'http://localhost/uploads',
  	updir_path => '/home/user/www/uploads',
@@ -47,7 +54,7 @@ the file attributes stored in a SQL database.
 =head1 Introduction and Recipes
 
 The L<CGI::Uploader::Cookbook|CGI::Uploader::Cookbook> provides 
-a slight more in depth introduction and recipes for a a basic BREAD web
+a slightly more in depth introduction and recipes for a basic BREAD web
 application.  (Browse, Read, Edit, Add, Delete).  
 
 =head1 Constructor
@@ -56,36 +63,33 @@ application.  (Browse, Read, Edit, Add, Delete).
 
  my $u = CGI::Uploader->new(
  	spec       => {
-        img_1 => [
-            # The first image has 2 different sized thumbnails 
-            # that need to be created.
-            { name => 'img_1_thumb_1', w => 100, h => 100 }, 
-            { name => 'img_1_thumb_2', w => 50 , h => 50  }, 
-            ],
+         # The first image has 2 different sized thumbnails                                                                                      
+           img_1 => {   
+             gen_files => {   
+                     'img_1_thmb_1' => {                                                                          
+                             transform_method => \&gen_thumb,                
+                             params => [{ w => 100, h => 100 }],                                                             
+                     }                                                                                                         
+                     'img_1_thmb_2' => {                                                                                      
+                             transform_method => \&gen_thumb, 
+                             params => [{ w => 50, h => 50 }], 
+                     }                                                                                                          
+             }                                                                                                                
+           },                                                                                                                            
+       },                
 
-        # No thumbnails
-        img_2 => [],
+        # Just upload it
+        img_2 => {},
 
         # Downsize the large image to these maximum dimensions if it's larger
         img_3 => {
-            downsize => { w => 430 },
-            thumbs => [
-                { name => 'img_3_thumb_1',  w => 200 },
-            ],
+            # Besides generating dependent files                                                                                           
+            # We can also transform the file itself                                                                           
+            # Here, we shrink the image to be wider than 380                                                                    
+            transform_method => \&gen_thumb,                                                                                       
+            params => [{ w => 380 }],                                                                                           
 
         }
-
-		# Advanced:
-		# Define a spec for all images matching a regular expression
-		# and generate the thumbnail names based on each field name
-		qr/^photos_/ => {
-			thumbs => [
-				{ 
-					name => sub { my $n = shift; "$n_thumb" },
-					w    => 200,
-				},
-			]
-		}
     },
 
  	updir_url  => 'http://localhost/uploads',
@@ -103,23 +107,44 @@ application.  (Browse, Read, Edit, Add, Delete).
 =item spec [required]
 
 The specification described the examples above. The keys correspond to form
-field names for upload fields. Keys may also be given as regular expressions,
-which will case keys to be added for any file upload field that matches.
+field names for upload fields. 
 
-The values are array references or hash references. The simplest case is an
-empty array reference, which means no thumbnails will be created. 
+The values are hash references. The simplest case is an empty hash  reference,
+which means to just upload the image and apply no transformations.
 
-Each element in the array is a hash reference with the following keys: 'name',
-'w', 'h'. These correspond to the name, max width, and max height of the
-thumbnail.
+#####
 
-C<name> can be a simple scalar, or code ref. This code ref will be passed one
-argument, the file name, and should return a string to use for the thumbnail.
-This is useful in combination with specifying the keys as regular expressions. 
+Each key in the hash is the corresponds to a file upload field. The values
+are hash references used provide options for how to transform the file, 
+and possibly generate additional files based on it. 
 
-Also notice there is an option to 'downsize' the large image if needed. Also,
-for the C<downsize> and thumbnail size specifications, only one dimension needs
-to provided, if that's all you care about. 
+Valid keys here are:
+
+=item transform_method
+
+This is a subroutine reference. This routine can be used to transform the
+upload before it is stored. The first argument given to the routine will be the
+CGI::Uploader object. The second will be a full path to a file name containing
+the upload.
+
+Additional arguments can be passed to the subroutine using C<params>, as in 
+the example above.
+
+It must return a full path to a transformed file. 
+
+=item params 
+
+Used to pass additional arguments to C<transform_method>. See above. 
+
+Each method used may have additional documentation about parameters
+that can be passed to it.
+
+=item gen_files
+
+A hash reference to describe files generated from a particular upload.
+The keys are unique identifiers  for the generated files. The values
+are hashrefs, containing keys named C<transform_method> and C<params>,
+which work as described above to generate a transformed version of the file.  
 
 =item updir_url [required]
 
@@ -158,7 +183,7 @@ This is not required. It simply allows you to use custom column names.
   extension       => 'extension',
   width           => 'width',
   height          => 'height',   
-  thumbnail_of_id => 'thumbnail_of_id',
+  gen_from_id => 'gen_from_id',
 
 You may also define additional column names with a value of 'undef'. This feature
 is only useful if you override the C<extract_meta()> method or pass in
@@ -211,7 +236,7 @@ sub new {
                               extension       => 'extension',
                               width           => 'width',
                               height          => 'height',   
-							  thumbnail_of_id => 'thumbnail_of_id',
+							  gen_from_id     => 'gen_from_id',
 #                              bytes      => 'bytes',
                           }
         },
@@ -235,37 +260,14 @@ sub new {
     }
 
 	# Process the spec
-	for my $k (keys %{ $in{spec} }) {
-		# If the spec is an arrayref, that's a shorthand for specifying some thumbs.
-		if (ref $in{spec}->{$k} eq 'ARRAY') {
-			$in{spec}->{$k} = {
-				thumbs => $in{spec}->{$k},
-			};
-		}
-
-		# Handle regex's (you might think I could check for "ref $k eq 'Regexp'"... but that doesn't work
-	    if (substr($k,0,1) eq '(') {
-			# Add all matching fields to spec
-			my @field_names = __PACKAGE__->upload_field_names($in{query});
-			for my $field (grep {m/$k/} @field_names) {
-				$in{spec}{$field} = $in{spec}{$k};
-			}
-
-			# Delete original
-			delete $in{spec}{$k};
-		}
-	}
-
-	# Now that the regex's have been processed
-	# Make a second pass to fix any thumbnail names given as code refs
-	for my $k (grep { exists $in{spec}->{$_}{thumbs} } keys %{ $in{spec} }) {
-		for my $thumb (@{ $in{spec}->{$k}{thumbs} }) {
-			if (ref $thumb->{name} eq 'CODE') {
-				$thumb->{name} = $thumb->{name}->($k);
-			}
-		}
-	}
-
+    for my $k (keys %{ $in{spec} }) {
+        # If the spec is an arrayref, that's a shorthand for specifying some gen_files.
+        if (ref $in{spec}->{$k} eq 'ARRAY') {
+            $in{spec}->{$k} = {
+                gen_files => $in{spec}->{$k},
+            };
+        }
+    }
 
     # Fill in missing map values
     for (keys %{ $in{up_table_map} }) {
@@ -297,7 +299,12 @@ Specifically, it does the following:
 
 =item o
 
-creates any needed thumbnails
+possibily transforms the original file according to C<transform_method>
+
+=item o
+
+possibly generates additional files based on those uploaded, according to
+C<gen_files>.
 
 =item o
 
@@ -390,7 +397,7 @@ sub store_uploads {
 
  my @fk_col_names = $u->delete_checked_uploads;
 
-This method deletes all uploads and any associated thumbnails
+This method deletes all uploads and any generated files
 based on form input. Both files and meta data are removed.
 
 It looks through all the field names defined in C<spec>. For an upload named
@@ -416,7 +423,7 @@ sub delete_checked_uploads {
     my $q = $self->{query};
 	my $map = $self->{up_table_map};
 
-	die "missing thumnbnail_of_id in up_table_map"  unless $map->{thumbnail_of_id};
+	die "missing gen_from_id in up_table_map"  unless $map->{gen_from_id};
 
 
 	my @to_delete;
@@ -429,14 +436,14 @@ sub delete_checked_uploads {
 
 			$self->delete_upload($upload_id);
 			
-			# Delete child thumbnails as well. 
-			my $thumb_ids = $self->{dbh}->selectcol_arrayref(
+			# Delete generated files  as well. 
+			my $gen_file_ids = $self->{dbh}->selectcol_arrayref(
 				"SELECT $map->{upload_id}
 					FROM $self->{up_table}
-					WHERE $map->{thumbnail_of_id} = ?",{},$upload_id) || [];
+					WHERE $map->{gen_from_id} = ?",{},$upload_id) || [];
 
-			for my $thumb_id (@$thumb_ids) {
-				$self->delete_upload($thumb_id);
+			for my $gen_file_id (@$gen_file_ids) {
+				$self->delete_upload($gen_file_id);
 			}
 
 			push @to_delete, map {$_.'_id'} $self->spec_names($file_field) ; 
@@ -515,6 +522,7 @@ sub fk_meta {
     my $map = $self->{up_table_map};
 
 	for my $field (@file_fields) {
+        warn "field: $field\n";
 		my $upload = $DBH->selectrow_hashref(qq!
 			SELECT * 
 				FROM !.$self->{up_table}.qq!, $table AS t
@@ -610,123 +618,11 @@ sub upload {
     return ($tmp_filename,$mt,$filename);
 }
 
-=head2 gen_thumb()
-
- ($thumb_tmp_filename)  = CGI::Uploader->gen_thumb(
-    filename => $orig_filename,
-    w => $width,
-    h => $height,
-    );
-
-This function creates a copy of given image file and resizes the copy to the
-provided width and height.
-
-C<gen_thumb> can be called as object or class method. As a class method,
-there there is no need to call C<new()> before calling this method.
-
-Input:
-    filename => filename of source image 
-    w => max width of thumbnail
-    h => max height of thumbnail
-
-One or both  of C<w> or C<h> is required.
-
-Output:
-    - filename of generated tmp file for the thumbnail 
-
-=cut
-
-sub gen_thumb {
-    my $self = shift;
-    my %p = validate(@_,{
-            filename => {type => SCALAR },
-            w => { type => SCALAR | UNDEF, regex => qr/^\d*$/, optional => 1, },
-            h => { type => SCALAR | UNDEF, regex => qr/^\d*$/, optional => 1 },
-        });
-    die "must supply 'w' or 'h'" unless (defined $p{w} or defined $p{h});
-
-
-    my $orig_filename = $p{filename};
-    my ($orig_w,$orig_h,$orig_fmt) = imgsize($orig_filename);
-
-    my $target_h = $p{h};
-    my $target_w = $p{w};
-
-    $target_h = sprintf("%.1d", ($orig_h * $target_w) / $orig_w) unless $target_h;
-    $target_w = sprintf("%.1d", ($orig_w * $target_h) / $orig_h) unless $target_w;
-
-    my ($thumb_tmp_fh, $thumb_tmp_filename) = tempfile('CGIuploaderXXXXX', UNLINK => 1);
-    binmode($thumb_tmp_fh);
-
-    eval { require Image::Magick; };
-    my $have_image_magick = !$@;
-    eval { require GD; };
-    my $have_gd = !$@; 
-
-     my %gd_map = (
-         'PNG' =>  'png',
-         'JPG'  => 'jpeg',
-         'GIF'  => 'gif',
-     );
-
-    if ($have_image_magick) {
-        my $img = Image::Magick->new();
-        $img->Read(filename=>$orig_filename);
-        $img->Resize($target_w.'x'.$target_h); 
-        my $err = $img->Write($thumb_tmp_filename);
-        if ($err) {
-            warn $err;
-            my $code;
-            # codes > 400 are fatal 
-            die $err if ((($code) = $err =~ /(\d+)/) and ($code > 400));
-        }
-    }
-    elsif ($have_gd and (grep {m/^$orig_fmt$/} keys %gd_map)) {
-		die "Image::Magick wasn't found and GD support is not complete. 
-			Install Image::Magick or fix GD support. ";
-
-        # This formula was figured out by Ehren Nagel
-        my ($actual_w,$actual_h) = ($target_w,$target_h);
-        my $potential_w  = ($target_h/$orig_h)*$orig_w;
-        my $potential_h  = ($target_w/$orig_w)*$orig_h;
-
-        if  (($orig_h > $orig_w ) and ($potential_w < $target_w)) {
-            $actual_w = $potential_w;
-        }
-        elsif (($orig_h > $orig_w ) and ($potential_w >= $target_w)) {
-            $actual_h = $potential_h;
-        }
-        elsif (($orig_h <=  $orig_w ) and ($potential_h < $target_h ))   {
-            $actual_h = $potential_h;
-        }
-        elsif (($orig_h <=  $orig_w ) and ($potential_h >= $target_h ))   {
-            $actual_w = $potential_w;
-        }
-
-        my $orig  = GD::Image->new("$orig_filename") || die "$!";
-        my $thumb = GD::Image->new( $actual_w,$actual_h );
-        $thumb->copyResized($orig,0,0,0,0,$actual_w,$actual_h,$orig_w,$orig_h);
-        my $meth = $gd_map{$orig_fmt};
-        no strict 'refs';
-        no strict 'subs';
-        binmode($thumb_tmp_fh); 
-        print $thumb_tmp_fh, $thumb->$meth;
-    }
-    else {
-        die "No graphics module found for image resizing. Install Image::Magick or GD.
-        ( GD is only good for  PNG and JPEG, but may be easier to get installed ): $@ "
-    }
-
-    assert ($thumb_tmp_filename, 'thumbnail tmp file created');
-    return $thumb_tmp_filename;
-
-}
-
 =head1 Upload Methods
 
 These methods are high level methods to manage the file and meta data parts of
-an upload, as well it's thumbnails.  If you are doing something more complex or
-customized you may want to call or overide one of the below methods.
+an upload, as well its generated files.  If you are doing something more
+complex or customized you may want to call or overide one of the below methods.
 
 =head2 store_upload()
 
@@ -768,31 +664,27 @@ sub store_upload {
 
     my $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
 
-    # downsize primary image if needed
-    my $downsize = $self->{spec}{$file_field}{downsize};
+    # XXX needs refactoring
 
-    my ($curr_w, $curr_h) = imgsize($tmp_filename);
-    if (
-            (defined $downsize->{w} and $downsize->{w} < $curr_w) 
-        or  (defined $downsize->{h} and $downsize->{h} < $curr_h) 
-        ) {
-         $tmp_filename  = $self->gen_thumb(
-                filename => $tmp_filename,
-                w => $downsize->{w},
-                h => $downsize->{h},
-            );
-        }
+    # Transform file if needed
+    if (my $meth = $self->{spec}{$file_field}{transform_method}) {
+        $tmp_filename = $meth->(
+            $self,
+            $file_name,
+            $self->{spec}{$file_field}{params},
+        );
+    }
 
-        $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
+    $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
 
-        $shared_meta ||= {};
-        my $all_meta = { %$meta, %$shared_meta };   
+    $shared_meta ||= {};
+    my $all_meta = { %$meta, %$shared_meta };   
 
     my $id;
     # If it's an update
     if ($id = $id_to_update) {
-        # delete old thumbnails before we create new ones
-        $self->delete_thumbs($id);
+        # delete old generated files  before we create new ones
+        $self->delete_gen_files($id);
     }
 
     # insert or update will be performed as approriate. 
@@ -804,24 +696,24 @@ sub store_upload {
 
     $self->store_file($file_field,$id,$meta->{extension},$tmp_filename);
 
-    my %ids = $self->create_store_thumbs(
+    my %ids = $self->create_store_gen_files(
 		file_field      => $file_field,
 		meta	        => $all_meta,
 		src_file        => $tmp_filename,
-		thumbnail_of_id => $id,
+		gen_from_id => $id,
     );
 
     return (%ids, $file_field.'_id' => $id);
 
 }
 
-=head2 create_store_thumbs() 
+=head2 create_store_gen_files() 
 
- my %thumb_ids = $u->create_store_thumbs(
+ my %gen_file_ids = $u->create_store_gen_files(
  		file_field      => $file_field,
 		meta            => $meta_href,
 		src_file        => $tmp_filename,
-		thumbnail_of_id => $thumbnail_of_id,
+		gen_from_id => $gen_from_id,
     );
 
 This method is responsible for creating and storing 
@@ -831,54 +723,56 @@ Input:
  - file_field: file field name
  - meta: a hash ref of meta data, as C<extract_meta> would produce 
  - src_file: path to temporary file of the file upload
- - thumbnail_of_id: ID of upload that thumbnails will be made from
+ - gen_from_id: ID of upload that generated files  will be made from
 
 =cut
 
-sub create_store_thumbs {
+sub create_store_gen_files {
 	my $self = shift;
     my %p = validate(@_, {
             file_field       => { type => SCALAR },
             src_file         => { type => SCALAR },
             meta             => { type => HASHREF | UNDEF,    default => {} },
-            thumbnail_of_id  => { regex => qr/^\d*$/, },
+            gen_from_id  => { regex => qr/^\d*$/, },
         });
 	my ($file_field,
 		$meta,
 		$tmp_filename,
-		$thumbnail_of_id) = ($p{file_field},$p{meta},$p{src_file},$p{thumbnail_of_id});
+		$gen_from_id) = ($p{file_field},$p{meta},$p{src_file},$p{gen_from_id});
 
-	my $thumbs = $self->{spec}{$file_field}{thumbs};
+    my $gen_fields_key = $self->{spec}{$file_field}{gen_files} || return undef;
+    my @gen_files = keys %{ $gen_fields_key }; 
+
+	my $gen_files = $self->{spec}{$file_field}{gen_files};
 	my $q = $self->{query};
 	my %out;
 
 	my ($w,$h) = ($meta->{width},$meta->{height});
-	for my $thumb (@$thumbs) {
-        my $thumb_tmp_filename;
-		# resize as needed
-		if ((defined $w and defined $h) and ($w > $thumb->{w} or $h > $thumb->{h})) {
-            $thumb_tmp_filename = $self->gen_thumb(
-                filename => $tmp_filename,
-                w => $thumb->{w},
-                h => $thumb->{h});
-		}
-        # If the file is already reasonably sized, just use theh original tmp filename
-        else {
-            $thumb_tmp_filename = $tmp_filename;
+	for my $gen_file (@gen_files) {
+        my $gen_tmp_filename;
+
+        # tranform as needed
+        if (my $meth = $self->{spec}{$file_field}{gen_files}{$gen_file}{transform_method}) {
+            $gen_tmp_filename = $meth->(
+                $self,
+                $tmp_filename,
+                $self->{spec}{$file_field}{gen_files}{$gen_file}{params},
+            );
         }
 
 		# inherit mime-type and extension from parent
-		# set as thumbnail of parent
-		my %t_info =  (%$meta, thumbnail_of_id => $thumbnail_of_id);
-		($t_info{width}, $t_info{height}) = imgsize($thumb_tmp_filename);
+		my %t_info =  (%$meta, gen_from_id => $gen_from_id);
+
+        # Try to get image dimensions (will fail safely for non-images)
+		($t_info{width}, $t_info{height}) = imgsize($gen_tmp_filename);
 
 		# Insert		
-		my $id = $self->store_meta($thumb->{name}, \%t_info );
+		my $id = $self->store_meta($gen_file, \%t_info );
 
 		# Add to output hash
-		$out{$thumb->{name}.'_id'} = $id;
+		$out{$gen_file.'_id'} = $id;
 
-        $self->store_file($thumb->{name},$id,$t_info{extension},$thumb_tmp_filename);
+        $self->store_file($gen_file,$id,$t_info{extension},$gen_tmp_filename);
 	}
 	return %out;
 }
@@ -891,7 +785,7 @@ This method is used to delete the meta data and file associated with an upload.
 Usually it's more convenient to use C<delete_checked_uploads> than to call this
 method directly.
 
-This method does not delete thumbnails for this upload. 
+This method does not delete generated files for this upload. 
 
 =cut
 
@@ -904,29 +798,29 @@ sub delete_upload {
 
 }
 
-=head2 delete_thumbs()
+=head2 delete_gen_files()
 
- $self->delete_thumbs($id);
+ $self->delete_gen_files($id);
 
-Delete the thumbnails for a given file ID, from the file system and the database
+Delete the generated files  for a given file ID, from the file system and the database
 
 =cut
 
-sub delete_thumbs {
+sub delete_gen_files {
     validate_pos(@_,1,1);
     my ($self,$id) = @_;
 
     my $dbh = $self->{dbh};
     my $map = $self->{up_table_map};
 
-    my $thumb_ids_aref = $dbh->selectcol_arrayref(
+    my $gen_file_ids_aref = $dbh->selectcol_arrayref(
         "SELECT   $map->{upload_id} 
             FROM  ".$self->{up_table}. "
-            WHERE $map->{thumbnail_of_id} = ?",{},$id) || [];
+            WHERE $map->{gen_from_id} = ?",{},$id) || [];
 
-    for my $thumb_id (@$thumb_ids_aref) {
-        $self->delete_file($thumb_id);
-        $self->delete_meta($thumb_id);
+    for my $gen_file_id (@$gen_file_ids_aref) {
+        $self->delete_file($gen_file_id);
+        $self->delete_meta($gen_file_id);
     }
 
 }
@@ -935,11 +829,14 @@ sub delete_thumbs {
 
 =head2 extract_meta() 
 
- $self->extract_meta($file_field)
+ $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
 
 This method extracts and returns the meta data about a file and returns it.
 
-Input: A file field name.
+Input:
+    - Path to file to extract meta data from
+    - the name of the file (as sent through the file upload file)
+    - The mime-type of the file, as supplied by the browser
 
 Returns: a hash reference of meta data, following this example:
 
@@ -1132,7 +1029,7 @@ Prepares meta data from the database for display.
 
 
 Input:
- - meta:   A hashref, as might be returned from "SELECT * FROM uploads"
+ - meta:   A hashref, as might be returned from "SELECT * FROM uploads WHERE upload_id = ?"
 
  - prefix: the resulting hashref keys will be prefixed with this,
    adding an underscore as well.
@@ -1364,25 +1261,24 @@ sub upload_field_names {
  $spec_names = $u->spec_names('file_field'):
 
 With no arguments, returns an array of all the upload names defined in the
-spec, including any thumbnail names.
+spec, including any generated file names.
 
 With one argument, a file field from the spec, can also be provided. It then returns
-that name as well as the names of any related thumbnails. 
-
-
+that name as well as the names of any related generated files.
 
 =cut
 
 sub spec_names {
  	my $self = shift;
-	my $file_field = shift;
+	my $spec_key = shift;
 
- 	my $fields = $self->{spec};
+ 	my $all_keys = $self->{spec};
 
-	my @fields_to_use =  (defined $file_field) ? $file_field  : keys %$fields;
+    # only use $spec_key if it was passed in
+	my @primary_spec_keys_to_use  =  (defined $spec_key) ? $spec_key  : keys %$all_keys;
  
- 	return @fields_to_use,  # primary images
- 		map { map { $_->{name}   } @{ $fields->{$_}{thumbs} } } @fields_to_use ;  # thumbs
+    my @gen_files = @primary_spec_keys_to_use, 
+        map { keys %{ $all_keys->{$_}{gen_files} } } @primary_spec_keys_to_use; 
 }
 
 1;

@@ -6,5 +6,5 @@ CREATE TABLE uploads (
 	height     integer,
 
 	-- refer to the ID of the image used to create this thumbnail, if any
-	thumbnail_of_id integer
+	gen_from_id integer
 )

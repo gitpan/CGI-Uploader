@@ -13,15 +13,14 @@ BEGIN {
     use_ok('Image::Size');
     use_ok('DBI');
     use_ok('CGI');
+    use_ok('Image::Magick');
+    use_ok('CGI::Uploader::Transform::ImageMagick');
 };
 
 
- my ($class_meth_tmp_filename)  = CGI::Uploader->gen_thumb(
-         filename => 't/20x16.png',
-         w => 5,
-	 );
+ my ($tmp_filename)  = CGI::Uploader::Transform::ImageMagick->gen_thumb( 't/20x16.png', [ w => 5 ]);
 
- my ($w,$h) = imgsize($class_meth_tmp_filename); 
+ my ($w,$h) = imgsize($tmp_filename); 
  is($w,5,'as class method - correct height only width is supplied');
  is($h,4,'as class method - correct height only width is supplied');
 
@@ -43,9 +42,14 @@ BEGIN {
     ok($DBH,'connecting to database'), 
 
 	 my %imgs = (
-		'img_1' => [
-            { name => 'img_1_thumb', w => 10 }
-        ],
+		'img_1' => {
+            gen_files => {
+                img_1_thumb => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 10 }],
+                },
+            },
+        },
 	 );
 
 	 my $u = 	CGI::Uploader->new(
@@ -57,20 +61,12 @@ BEGIN {
 	 );
 	 ok($u, 'Uploader object creation');
 
-     my ($thumb_tmp_filename)  = $u->gen_thumb(
-         filename => 't/20x16.png',
-         w => 10,
-     );
-
-     my ($w,$h) = imgsize($thumb_tmp_filename); 
+    my ($tmp_filename)  = CGI::Uploader::Transform::ImageMagick->gen_thumb( 't/20x16.png', [ w => 10 ]);
+     my ($w,$h) = imgsize($tmp_filename); 
      is($h,8,'correct height only width is supplied');
 
-     ($thumb_tmp_filename)  = $u->gen_thumb(
-         filename => 't/20x16.png',
-         h => 8,
-     );
-
-     ($w,$h) = imgsize($thumb_tmp_filename); 
+    my ($tmp_filename)  = CGI::Uploader::Transform::ImageMagick->gen_thumb( 't/20x16.png', [ h => 8 ]);
+     ($w,$h) = imgsize($tmp_filename); 
      is($w,10,'correct width only width is supplied');
 
 ###

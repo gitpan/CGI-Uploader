@@ -19,15 +19,20 @@ use DBI;
 # ADJUST ME
 my $dbh = DBI->connect('dbi:Pg:dbname=mark','mark');
 
-
+use CGI::Uploader::Transform::ImageMagick;
 my $app = FriendsPhotos->new(
 	PARAMS => {
 		dbh => $dbh,
 		uploader_args => {
 			spec => {
-				photo => [
-				{ name => 'photo_thumbnail', w => 100, h => 100, }
-				],
+				photo =>  {
+                    gen_files => {
+                        photo_thumbnail => {
+                            transform_method => \&gen_thumb,
+                            params => [{ w => 100, h => 100}],
+                        },
+                    }
+                }
 			},
 			updir_url  => "$script_url/uploads",
 			updir_path => "$script_dir/uploads",

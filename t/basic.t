@@ -3,7 +3,7 @@
 use Test::More qw/no_plan/;
 use Test::Differences;
 use Carp::Assert;
-use lib 'lib';
+use lib 'lib', '../lib';
 use strict;
 
 BEGIN { use_ok('CGI::Uploader') };
@@ -12,6 +12,7 @@ BEGIN { use_ok('CGI') };
 BEGIN { use_ok('Test::DatabaseRow') };
 BEGIN { use_ok('Image::Magick') };
 BEGIN { use_ok('Image::Size') };
+BEGIN { use_ok('CGI::Uploader::Transform::ImageMagick') };
 
 
 
@@ -91,19 +92,28 @@ SKIP: {
 	 skip "Couldn't create database table", 20 unless $created_up_table;
 
 	 my %imgs = (
-		qr/100/ => [
-			{ name => 'img_1_thumb_1', w => 50, h => 60 },
-			{ name => 'img_1_thumb_2', w => 35, h => 25 },
-		],
-		'300x300_gif' => [
-			{ name => 'img_2_thumb_1', w => 210, h => 200 },
-			{ 
-				# Test a code ref name. 
-				name => sub { 'img_2_thumb_2' },
-				w => 150, h => 140 
-			},
-		],
-        '20x16_png' => { downsize => { w => 10 } },
+		'100x100_gif' => {
+            gen_files => {
+                img_1_thumb_1 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 100, h => 100 }],
+                },
+                img_1_thumb_2 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 50, h => 50 }],
+                },
+
+            },
+
+        },
+		'300x300_gif' => { 
+            gen_files => {
+                img_2_thumb_2 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 210, h => 200 }]
+                }
+            },
+        },
 	 );
 
 	 my $u = 	CGI::Uploader->new(
@@ -122,21 +132,28 @@ SKIP: {
 	 is($@,'', 'calling store_uploads');
 
 use Data::Dumper;
-    my @pres = grep {!m/png/} $u->spec_names; ok(eq_set([grep {m/_id$/} keys %$entity ],[map { $_.'_id'} @pres]),
-	 	'store_uploads entity additions work') || diag Dumper ($entity);
+    my @pres = grep {!m/png/} $u->spec_names; 
+    ok(eq_set([grep {m/_id$/} keys %$entity ],[map { $_.'_id'} @pres]),
+	 	'store_uploads entity additions work') || diag Dumper (\@pres,$entity);
 
 	ok(not(grep {m/^(300x300_gif|100x100_gif)$/} keys %$entity),
            'store_uploads entity removals work');
 
 	my @files = <t/uploads/*>;	
-	ok(scalar @files == 6, 'expected number of files created');
+	ok(scalar @files == 5, 'expected number of files created');
 
-    my ($t_w,$t_h) = imgsize('t/uploads/3.gif');  
-    is($t_w,140,'width  of thumbnail is correct');
-    is($t_h,140,'height of thumbnail is correct');
+    my $id_of_300x300_parent = 1;
+    my $id_of_300x300_thmb_1 = 2;
+    my $id_of_100x100_parent = 3;
+    my $id_of_100x100_50_t   = 4;
+    my $id_of_100x100_100_t  = 5;
+
+    my ($t_w,$t_h) = imgsize('t/uploads/'.$id_of_100x100_50_t.'.gif');  
+    is($t_w,50,'width  of thumbnail is correct');
+    is($t_h,50,'height of thumbnail is correct');
 
 	$Test::DatabaseRow::dbh = $DBH;
-	row_ok( sql   => "SELECT * FROM uploads  ORDER BY upload_id LIMIT 1",
+	row_ok( sql   => "SELECT * FROM uploads ORDER BY upload_id LIMIT 1",
                 tests => {
 					'eq' => {
 						mime_type => 'image/gif',
@@ -151,11 +168,11 @@ use Data::Dumper;
                 label => "reality checking a database row");
 
 	my $row_cnt = $DBH->selectrow_array("SELECT count(*) FROM uploads ");
-	ok($row_cnt == 6, 'number of rows in database');
+	is($row_cnt,5, 'number of rows in database');
 
-	 $q->param('100x100_gif_id',1);
-	 $q->param('img_1_thumb_1_id',2);
-	 $q->param('img_1_thumb_2_id',3);
+	 $q->param('100x100_gif_id',$id_of_100x100_parent);
+	 $q->param('img_1_thumb_1_id',$id_of_100x100_50_t);
+	 $q->param('img_1_thumb_2_id',$id_of_100x100_100_t);
 	 $q->param('100x100_gif_delete',1);
 	 my @deleted_field_ids = $u->delete_checked_uploads;
 
@@ -163,13 +180,15 @@ use Data::Dumper;
 
 	 @files = <t/uploads/*>;	
 
-	ok(scalar @files == 3, 'expected number of files removed');
+	ok(scalar @files == 2, 'expected number of files removed');
 
 	$row_cnt = $DBH->selectrow_array("SELECT count(*) FROM uploads ");
-	ok($row_cnt == 3, "Expected number of rows remaining:  ($row_cnt)");
+	ok($row_cnt == 2, "Expected number of rows remaining:  ($row_cnt)");
 
-	my $qt = ($drv eq 'mysql') ? '`' : '"'; # mysql has a funny way of quoting
-	ok($DBH->do(qq!INSERT INTO cgi_uploader_test (item_id,${qt}100x100_gif_id$qt,img_1_thumb_1_id) VALUES (1,6,5)!), 'test data insert');
+    # mysql has a funny way of quoting
+	my $qt = ($drv eq 'mysql') ? '`' : '"'; 
+	ok($DBH->do(qq!INSERT INTO cgi_uploader_test (item_id,${qt}100x100_gif_id$qt,img_1_thumb_1_id) VALUES (1, $id_of_300x300_parent,
+                $id_of_300x300_thmb_1)!), 'test data insert');
 	my $tmpl_vars_ref = $u->fk_meta(
         table   => 'cgi_uploader_test',
         where   => {item_id => 1},
@@ -191,43 +210,22 @@ use Data::Dumper;
 			[keys %$tmpl_vars_ref],
 		), 'fk_meta keys returned') || diag Dumper($tmpl_vars_ref);
 
-    row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= 4",
+    row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= $id_of_300x300_thmb_1",
                 tests => [ 
 					mime_type        => 'image/gif',
 					extension        => '.gif',
-				    width	         => 100,		
-					height	         => 100,
-					thumbnail_of_id  => undef,
+				    width	         => 200,		
+					height	         => 200,
+					gen_from_id      => $id_of_300x300_parent,
 					],
-                label => "upload 4 is all good");
-
-    row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= 5",
-                tests => [ 
-					mime_type       => 'image/gif',
-					extension       => '.gif',
-				    width	        => 50,		
-					height	        => 50,
-					thumbnail_of_id => 4,
-					],
-                label => "upload 5 is all good");
-
-    row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= 6",
-                tests => [ 
-					mime_type       => 'image/gif',
-					extension       => '.gif',
-				    width	        => 25,		
-					height	        => 25,
-					thumbnail_of_id => 4,
-					],
-                label => "upload 6 is all good");
-
+                label => "upload for thumb of 300x300 img is all good");
 
 close(IN);
 
 ####
 
 
-# Simulate another upload, this time with the files in the reverse fields
+# Simulate another upload, 
 
 # 
              my %entity_upload_extra = $u->store_upload(
@@ -235,55 +233,37 @@ close(IN);
                  src_file      => 't/200x200.gif',
                  uploaded_mt   => 'image/gif',
                  file_name     => '200x200.gif',
-                 id_to_update  => 4,
+                 id_to_update  => $id_of_300x300_parent,
              );
 
-         row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= 4",
+         row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= $id_of_300x300_parent",
              tests => [ 
-             mime_type        => 'image/gif',
-             extension        => '.gif',
+             mime_type       => 'image/gif',
+             extension       => '.gif',
              width	         => 200,		
              height	         => 200,
-             thumbnail_of_id  => undef,
+             gen_from_id     => undef,
              ],
              label =>
-             "image that had the ID of the 100x100 image should house a 300x300 image");
+             "image that had the ID of the 300x300 image should house a 200x200 image");
 
 ###
 
 	my $found_old_thumbs = $DBH->selectcol_arrayref("
-			SELECT upload_id FROM uploads WHERE upload_id IN (5,6)");
+			SELECT upload_id FROM uploads WHERE upload_id IN ($id_of_100x100_100_t,$id_of_100x100_50_t)");
 	is(scalar @$found_old_thumbs,0, 
 	  'The original thumbnails of the 100x100 image should be deleted');
-	
+
 ###
  
 my $how_many_thumbs = $DBH->selectrow_array("SELECT 
-		count(upload_id) FROM uploads WHERE thumbnail_of_id = 4");
-	is($how_many_thumbs,2,	
-		'two new thumbnails for this image should have been generated');
+		count(upload_id) FROM uploads WHERE gen_from_id = $id_of_300x300_parent");
+	is($how_many_thumbs,1,	
+		'1 new thumbnail for this image should have been generated');
+
+}
 
 ##########
-
-    my %png;
-   eval {
-       %png = $u->store_upload(
-           file_field  => '20x16_png',
-           src_file    => 't/20x16.png',
-           uploaded_mt => 'image/png',
-           file_name   => '20x16.png',
-       );
-   };
-   is($@,'', 'store_upload() survives');
-   
-   my ($db_height,$db_width) =$DBH->selectrow_array(
-       "SELECT height, width
-       FROM uploads 
-       WHERE upload_id = 9");
-   is($db_height, 8, "downsize: correct height");
-   is($db_width, 10, "downsize: correct width");
-
-};
 
 # We use an end block to clean up even if the script dies.
  END {
@@ -306,5 +286,4 @@ use overload
     '""'  => sub { return '200x200.gif' },
 #    'cmp' => sub { return 1 },
     'fallback'=>1;
-
 

@@ -11,6 +11,10 @@ BEGIN { use_ok('CGI::Uploader') };
 BEGIN { use_ok('DBI') };
 BEGIN { use_ok('CGI') };
 BEGIN { use_ok('Test::DatabaseRow') };
+BEGIN {
+    use_ok('Image::Magick');
+    use_ok('CGI::Uploader::Transform::ImageMagick');
+};
 
 %ENV = (
 	%ENV,
@@ -91,18 +95,36 @@ SKIP: {
      $DBH->do("ALTER TABLE uploads RENAME extension TO extension_b");
      $DBH->do("ALTER TABLE uploads RENAME width TO width_b");
      $DBH->do("ALTER TABLE uploads RENAME height TO height_b");
-     $DBH->do("ALTER TABLE uploads RENAME thumbnail_of_id TO thumbnail_of_id_b");
+     $DBH->do("ALTER TABLE uploads RENAME gen_from_id TO gen_from_id_b");
      $DBH->do("ALTER TABLE uploads ADD COLUMN custom char(64)");
 
 	 my %imgs = (
-		'100x100_gif' => [
-			{ name => 'img_1_thumb_1', w => 50, h => 50 },
-			{ name => 'img_1_thumb_2', w => 50, h => 50 },
-		],
-		'300x300_gif' => [
-			{ name => 'img_2_thumb_1', w => 50, h => 50 },
-			{ name => 'img_2_thumb_2', w => 50, h => 50 },
-		],
+		'100x100_gif' => {
+            gen_files => {
+                img_1_thumb_1 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 100, h => 100 }],
+                },
+                img_1_thumb_2 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 50, h => 50 }],
+                },
+
+            },
+
+        },
+		'300x300_gif' => { 
+            gen_files => {
+                img_2_thumb_1 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 50, h => 50 }]
+                },
+                img_2_thumb_2 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 50, h => 50 }]
+                }
+            },
+        },
 	 );
 
 	 my $u = 	CGI::Uploader->new(
@@ -117,7 +139,7 @@ SKIP: {
             extension => 'extension_b',
             width     => 'width_b',
             height    => 'height_b',
-			thumbnail_of_id => 'thumbnail_of_id_b',
+			gen_from_id => 'gen_from_id_b',
             custom    => undef,
         }
 	 );

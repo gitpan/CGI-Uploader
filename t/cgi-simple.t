@@ -23,6 +23,8 @@ BEGIN { use_ok('DBI') };
 BEGIN { use_ok('Test::DatabaseRow') };
 BEGIN { use_ok('Image::Size') };
 BEGIN { use_ok('Test::Differences') };
+BEGIN { use_ok('Image::Magick') };
+BEGIN { use_ok('CGI::Uploader::Transform::ImageMagick') };
 
 
 %ENV = (
@@ -99,16 +101,33 @@ SKIP: {
 	 skip "Couldn't create database table", 20 unless $created_up_table;
 
 	 my %imgs = (
-		 qr/100/  => [
-			{ name => 'img_1_thumb_1', w => 50, h => 50 },
-			{ name => 'img_1_thumb_2', w => 50, h => 50 },
-		],
-		qr/300/ => [
-			{ name => 'img_2_thumb_1', w => 50, h => 50 },
-			{ name => 'img_2_thumb_2', w => 50, h => 50 },
-		],
-	 );
+		'100x100_gif' => {
+            gen_files => {
+                img_1_thumb_1 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 100, h => 100 }],
+                },
+                img_1_thumb_2 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 50, h => 50 }],
+                },
 
+            },
+
+        },
+		'300x300_gif' => { 
+            gen_files => {
+                img_2_thumb_1 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 50, h => 50 }]
+                },
+                img_2_thumb_2 => {
+                    transform_method => \&gen_thumb,
+                    params => [{ w => 50, h => 50 }]
+                }
+            },
+        },
+	 );
 
 	 my $u = 	CGI::Uploader->new(
 		updir_path=>'t/uploads',
@@ -120,18 +139,6 @@ SKIP: {
 	 ok($u, 'Uploader object creation');
 
 	 my @pres = $u->spec_names;
-	 ok(eq_set([qw/
-			 100x100_gif 
-			 300x300_gif
-             img_2_thumb_1
-             img_2_thumb_2
-             img_1_thumb_1
-             img_1_thumb_2
-
-			 
-			 /],[@pres] ),
-		"spec expands correctly when using REs");
-
      my $form_data = $q->Vars;
 
  	 my ($entity);

@@ -119,7 +119,6 @@ WriteMakefile(
 		'File::Spec'		  => 0,
 		'File::MMagic'	      => 1.22,		
         'File::Path'          => 0,
-		'Image::Magick'		  => 0,
 		'MIME::Type'		  => 0, 
 		'MIME::Types'		  => 0,
 		'Params::Validate'    => 0,
