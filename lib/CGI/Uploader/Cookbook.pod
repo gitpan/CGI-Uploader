@@ -104,6 +104,11 @@ For example, the C<gen_thumb()> method is general purpose thumbnail creating rou
 
 =head1 Browse, Read, Edit, Add, Delete (BREAD) Example Application
 
+The following sections will provide a walk through of a simple application
+using CGI::Uploader. This is intended to provide the picture of how this module
+can be used. Some details have been glossed over. For a complete, working
+example application, please see the C<examples> directory of the distribition.
+
 Before C<CGI::Uploader> can be useful, some setup needs to be done.
 You need some database tables to store the information in.
 
@@ -121,12 +126,12 @@ Here is the SQL to create such tables with Postgres:
 		extension   character varying(8), -- file extension
 		width       integer,                 
 		height      integer,
-		thumbnail_of_id integer,
+		thumbnail_of_id integer
+	);
 
-	)
-
+ CREATE SEQUENCE friend_id_seq;
  CREATE TABLE address_book (
-    friend_id       int primary key,
+    friend_id       int primary key NOT NULL DEFAULT nextval('friend_id_seq'),
     full_name       varchar(64),
 
     -- these two reference uploads('upload_id'),
@@ -242,7 +247,11 @@ to simplify things for you.
 Continuing with the example above, we would use this code to generate the details we need to
 display and link to the photo and thumbnail:
 
- my $href = $u->fk_meta('address_book',{ friend_id => 2 },qw/photo photo_thumbnail/);
+ my $href = $u->fk_meta(
+ 	table    => 'address_book',
+	where    => { rriend_id => 2 },
+	prefixes => [qw/photo photo_thumbnail/],
+	);
 
 That will fetch the details of the photo and thumbnail associated with the friend who is an
 ID of "2".
@@ -288,7 +297,7 @@ for display:
  <form action="your-script.cgi" enctype="multipart/form-data" METHOD="POST">
     <P>Friend Name: <input type="text" name="full_name"> </p>
 	<P>
-	Current Image: <!-- tmpl_var photo_url --> <br/>
+	<a href="<tmpl_var photo_url>">Current Image</a> <br/>
 	<input type="checkbox" value="1" name="photo_delete"> Delete Image?
 	</P>
 	<input type="hidden" name="photo_id" value="<tmpl_var photo_id>">

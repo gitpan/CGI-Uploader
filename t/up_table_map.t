@@ -91,6 +91,7 @@ SKIP: {
      $DBH->do("ALTER TABLE uploads RENAME extension TO extension_b");
      $DBH->do("ALTER TABLE uploads RENAME width TO width_b");
      $DBH->do("ALTER TABLE uploads RENAME height TO height_b");
+     $DBH->do("ALTER TABLE uploads RENAME thumbnail_of_id TO thumbnail_of_id_b");
      $DBH->do("ALTER TABLE uploads ADD COLUMN custom char(64)");
 
 	 my %imgs = (
@@ -116,6 +117,7 @@ SKIP: {
             extension => 'extension_b',
             width     => 'width_b',
             height    => 'height_b',
+			thumbnail_of_id => 'thumbnail_of_id_b',
             custom    => undef,
         }
 	 );

@@ -1,5 +1,15 @@
 Revision history for Perl extension CGI::Uploader.
 
+0.76_01 Sun Apr 25, 2004
+	[BUG FIXES]
+	- Fixed syntax errors in Cookbook SQL example
+	- Fixed bug where default query object wasn't loading correctly
+	- Fixed documtention of fk_meta() to match current interface.
+	- Fixed bug in t/up_table_map.t test
+	
+	[ENHANCEMENTS]
+	- Added example application to distribution
+
 0.75_02
 	- Refactored delete_upload() to be simpler and more intuitive.
 

@@ -19,4 +19,9 @@ t/up_table_map.t
 t/upload_post_reversed.txt
 t/upload_post_text.txt
 t/uploads/.empty
-META.yml                                 Module meta-data (added by MakeMaker)
+examples/friends_photos/photos.cgi
+examples/friends_photos/FriendsPhotos.pm
+examples/friends_photos/photo-add.html
+examples/friends_photos/photo-edit.html
+examples/friends_photos/friends.Pg.sql
+META.yml 

@@ -12,7 +12,7 @@ use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '0.75_02';
+$VERSION = '0.76_01';
 
 =head1 NAME
 
@@ -217,7 +217,7 @@ sub new {
         },
 		up_seq      => { default => 'upload_id_seq'},
 		spec        => { type => HASHREF },
-		query	    => { default => CGI->new() } ,
+		query	    => { optional => 1  } ,
         file_scheme => {
              regex   => qr/^simple|md5$/,
              default => 'simple',
@@ -416,6 +416,9 @@ sub delete_checked_uploads {
     my $q = $self->{query};
 	my $map = $self->{up_table_map};
 
+	die "missing thumnbnail_of_id in up_table_map"  unless $map->{thumbnail_of_id};
+
+
 	my @to_delete;
 
  	for my $file_field (keys %$imgs) {
@@ -447,7 +450,10 @@ sub delete_checked_uploads {
 
 =head2 fk_meta()
 
- my $href = $u->fk_meta($table,\%where,@prefixes);
+ my $href = $u->fk_meta(
+ 	table    => $table,
+	where    => \%where,
+	prefixes => \@prefixes,
 
 Returns a hash reference of information about the file, useful for 
 passing to a templating system. Here's an example of what the contents 
@@ -461,10 +467,6 @@ of C<$href> might look like:
 If the files happen to be images and have their width and height
 defined in the database row, template variables will be made
 for these as well. 
-
-Here's an example syntax of calling the function:
-
- my $href = $u->fk_meta('news',{ item_id => 23 },qw/file_1/);
 
 This is going to fetch the file information from the upload table for using the row 
 where news.item_id = 23 AND news.file_1_id = uploads.upload_id.
