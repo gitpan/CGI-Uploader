@@ -12,7 +12,7 @@ use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '0.80_02';
+$VERSION = '1.00';
 
 =head1 NAME
 
@@ -1284,6 +1284,11 @@ sub spec_names {
 1;
 __END__
 
+=head1 Contributing
+
+Patches, questions and feedback are welcome. I maintain CGI::Uploader using
+darcs, a CVS alterantive ( http://www.darcs.net/ ). My darcs archive is here:
+http://mark.stosberg.com/darcs_hive/uploader/
 
 =head1 Author
 
