@@ -9,3 +9,4 @@ t/cgi-uploader.config
 t/create_test_table.sql
 t/upload_post_text.txt
 t/pod.t
+t/up_table_map.t

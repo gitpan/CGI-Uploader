@@ -1,5 +1,27 @@
 Revision history for Perl extension CGI::Uploader.
 
+0.61_02
+    - Minor POD cleanups
+
+0.61_01
+    - Added custom_meta() method for more flexible meta data handled
+    - clarified code and extended documentation
+    - exposed 'build_loc' function, which may be useful as a utility function,
+      or for a sub-class.
+    - custom fields are now returned with meta_hashref() 
+
+0.60_02
+    - Added up_table_map test and fixed some related code.
+
+0.60_01
+    - Added 'up_table_map' configuration option, allowing for custom column
+      names.
+    - Documentation for several functions added.
+    - Began refactoring to make support for Apache::Request easier.  
+
+0.50_03 Mon Mar 22, 2004
+    - possible "binmode" test fix for Windows platforms.
+
 0.50_02 Sun Mar 21, 2004
     - Removed dependence on Image::Size 
     - Documentation clarifications (David Manura)

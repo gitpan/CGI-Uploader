@@ -1,4 +1,6 @@
 #########################
+# Please don't remove the next line. Thanks.
+# arch-tag: Mark_Stosberg_<mark@summersault.com>--2004-03-27_21:15:22
 
 use Test::More qw/no_plan/;
 use Test::Differences;
@@ -84,6 +86,14 @@ ok($created_test_table, 'creating test table');
 SKIP: {
 	 skip "Couldn't create database table", 20 unless $created_up_table;
 
+     # We alter the table to test our mapping
+     $DBH->do("ALTER TABLE uploads RENAME upload_id TO upload_id_b");
+     $DBH->do("ALTER TABLE uploads RENAME mime_type TO mime_type_b");
+     $DBH->do("ALTER TABLE uploads RENAME extension TO extension_b");
+     $DBH->do("ALTER TABLE uploads RENAME width TO width_b");
+     $DBH->do("ALTER TABLE uploads RENAME height TO height_b");
+     $DBH->do("ALTER TABLE uploads ADD COLUMN custom char(64)");
+
 	 my %imgs = (
 		'100x100_gif' => [
 			{ name => 'img_1_thumb_1', w => 50, h => 50 },
@@ -101,6 +111,14 @@ SKIP: {
 		dbh => $DBH,
 		query => $q,
 		spec => \%imgs,
+        up_table_map => {
+            upload_id => 'upload_id_b',
+            mime_type => 'mime_type_b',
+            extension => 'extension_b',
+            width     => 'width_b',
+            height    => 'height_b',
+            custom    => undef,
+        }
 	 );
 	 ok($u, 'Uploader object creation');
 
@@ -124,22 +142,22 @@ SKIP: {
 	ok(scalar @files == 6, 'expected number of files created');
 
 	$Test::DatabaseRow::dbh = $DBH;
-	row_ok( sql   => "SELECT * FROM uploads  ORDER BY upload_id LIMIT 1",
+	row_ok( sql   => "SELECT * FROM uploads  ORDER BY upload_id_b LIMIT 1",
                 tests => {
 					'eq' => {
-						mime_type => 'image/gif',
-						extension => '.gif',
+						mime_type_b => 'image/gif',
+						extension_b => '.gif',
 					},
 					'=~' => {
-						upload_id => qr/^\d+/,
-						width 	=> qr/^\d+/,
-						height 	=> qr/^\d+/,
+						upload_id_b => qr/^\d+/,
+						width_b 	=> qr/^\d+/,
+						height_b 	=> qr/^\d+/,
 					},
 				} ,
                 label => "reality checking a database row");
 
 	my $row_cnt = $DBH->selectrow_array("SELECT count(*) FROM uploads ");
-	ok($row_cnt == 6, 'number of rows in database');
+	is($row_cnt,6, 'number of rows in database');
 
 	 $q->param('100x100_gif_id',1);
 	 $q->param('img_1_thumb_1_id',2);
@@ -149,12 +167,13 @@ SKIP: {
 
 	 ok(eq_set(\@deleted_field_ids,['100x100_gif_id','img_1_thumb_1_id','img_1_thumb_2_id']), 'delete_checked_uploads returned field ids');
 
+
 	 @files = <t/uploads/*>;	
 
-	ok(scalar @files == 3, 'expected number of files removed');
+	is((scalar @files),3, 'expected number of files removed');
 
 	$row_cnt = $DBH->selectrow_array("SELECT count(*) FROM uploads ");
-	ok($row_cnt == 3, 'number of rows removed');
+	is($row_cnt,3, 'number of rows removed');
 
 	my $qt = ($drv eq 'mysql') ? '`' : '"'; # mysql has a funny way of quoting
 	ok($DBH->do(qq!INSERT INTO cgi_uploader_test (item_id,${qt}100x100_gif_id$qt,img_1_thumb_1_id) VALUES (1,6,5)!), 'test data insert');

@@ -112,10 +112,10 @@ WriteMakefile(
     'NAME'		=> 'CGI::Uploader',
     'VERSION_FROM'	=> 'lib/CGI/Uploader.pm', # finds $VERSION
     'PREREQ_PM'		=> {
-		'Data::FormValidator' => 3.2,
 		'CGI::Carp' 		  => 0,
 		'Params::Validate'    => 0,
-		CGI					  => 0,
+        'DBI'                 => 0,
+        'CGI'                 => 0,
 		'File::Copy'		  => 0,
 		'SQL::Abstract'	      => 0,
 		'Image::Magick'		  => 0,
