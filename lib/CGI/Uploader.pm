@@ -8,7 +8,7 @@ use Params::Validate qw/:all/;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '0.50_01';
+$VERSION = '0.50_02';
 
 =pod
 
@@ -44,8 +44,11 @@ the file attributes stored in a SQL database.
 
 =head1 EXAMPLE SETUP
 
-This module provides some glue between a web form and a SQL database.
-Here's a simple form that could be used with this module:
+Here's a simple form that could be used with this module to maintain
+a photo address book on the web.  The user inputs a name and uploads 
+a photo. This gets stored on the server and a thumbnail is automatically
+generated from the picture and saved as well. The files can then be
+downloaded from given URLs.
 
 =head2 EXAMPLE FORM
 
@@ -57,7 +60,7 @@ Here's a simple form that could be used with this module:
 
 Notice that the 'enctype' is important for file uploads to work.
 
-So we have a text field for a 'friend_name' and a file upload field named
+So we have a text field for a 'full_name' and a file upload field named
 'photo'.  
 
 =head2 EXAMPLE DATABASE 
@@ -65,8 +68,9 @@ So we have a text field for a 'friend_name' and a file upload field named
 To continue with the example above, we'll define two tables, one 
 will store file upload meta data. This can be used to store the information
 about file uploads related to any number of tables. However, only one other 
-table is required. For our example, we'll create an table to hold names and 
-photos of friends:
+table is required. (Future versions may not require an additional table at all.) 
+
+For our example, we'll create an table to hold names and photos of friends:
 
 	-- Note the Postgres specific syntax here
     CREATE SEQUENCE upload_id_seq;
@@ -88,14 +92,14 @@ photos of friends:
     photo_thumbnail_id  int 
  );
     
-I<MySQL is also supported. Check in the distribution for sample SQL 'Create'
-scripts for both MySQL and Postgresql databases.>.
+I<MySQL> is also supported. Check in the distribution for sample SQL 'Create'
+scripts for both I<MySQL> and I<Postgresql> databases.>.
 
 =head2 EXAMPLE FORM VALIDATION
 
-Finally, this module is designed to work with 
-L<Data::FormValidator|Data::FormValidator>, which can provide sophisticated 
-validation of file uploads. The Data::FormValidator profile to validate the 
+Although it is not required, this module is designed to work with
+L<Data::FormValidator|Data::FormValidator>, which can provide sophisticated
+validation of file uploads. The Data::FormValidator profile to validate the
 above form might look like this:
 
  {
@@ -122,9 +126,6 @@ above form might look like this:
      }
  }
 
-Not only does Data::FormValidator validate the file, it also discovers
-meta data in the process, which we will be storing.
-
 =head2 EXAMPLE RESULT
 
 Here's our end result: 
@@ -143,7 +144,8 @@ Here's our end result:
  3         | image/png | .png      |  200  | 400   |    
  4         | image/png | .png      |   50  | 100    |    
 
-The files are stored on the file system:  
+The files are stored on the file system. '4.png' was generated on
+the server a thumbnail of 3.png.
 
  /home/friends/www/uploads/3.png
  /home/friends/www/uploads/4.png
@@ -176,9 +178,11 @@ column of 'photo_id'.
 
  );
 
- # ... validate with Data::FormValidator as above to get $results
+ # get $form_data straight from the CGI environment
+ # (For the real world, I recommend validation with Data::FormValidator) 
+ my $form_data = $q->Vars; 
 
- my $friend = $u->store_uploads($results);
+ my $friend = $u->store_uploads($form_data);
 
  # Now the $friend hash been transformed so it can easily inserted
  # It now looks like this:
@@ -309,9 +313,9 @@ sub new {
 
 =pod 
 
-=head2 store_uploads($results)
+=head2 store_uploads($form_data)
 
-  my $entity = $u->store_uploads($results);
+  my $entity = $u->store_uploads($form_data);
 
 Stores uploaded files based on the definition given in C<spec>. 
 
@@ -335,16 +339,20 @@ populated if that meta data is available.
 
 =back
 
-As input, a L<Data::FormValidator::Results|Data::FormValidator::Results> object
-is required.  Furthermore, the
-L<Data::FormValidator::Constraints::Upload|Data::FormValidator::Constraints::Upload>
-module is expected to have been used to the generate meta data that will be
-used. To provide the meta data from another source, use the meta() method
-of the L<Data::FormValidator::Results|Data::FormValidator::Results> object.
+As input, a hash reference of form data is expected. The simplest way 
+to get this is like this:
+
+ use CGI;
+ my $q = new CGI; 
+ $form_data = $q->Vars;
+
+However, I recommend that you validate your data with a module with
+L<Data::FormValidator|Data::FormValidator>, and use a hash reference
+of validated data, instead of directly using the CGI form data.
 
 CGI::Uploader is designed to handle uploads that are included as a part 
-of an add/edit form for an entity stored in a database. So, the <$results> 
-object is expected to contain additional data for this entity as well
+of an add/edit form for an entity stored in a database. So, C<$form_data> 
+is expected to contain additional fields for this entity as well
 as the file upload fields.
 
 For this reason, the C<store_uploads> method returns a hash reference of the
@@ -359,31 +367,37 @@ the appropriate upload ID as the value.
 
 sub store_uploads {
 	validate_pos(@_,1,1);
-	my $self = shift;
-	my $results = shift;
-	my $imgs = $self->{spec};
+	my $self      = shift;
+	my $form_data = shift;
+	my $uploads = $self->{spec};
 
 	my (%add_to_valid);
 	my $q = $self->{query};
 
-	for my $i (keys %$imgs) {
-		if (my $info = $results->meta($i)) {
-			my %ids = $self->create_store_thumbs($i,$info,$imgs->{$i}->{thumbs});
+	for my $file_field (keys %$uploads) {
+        # If we have an uploaded file for this
+        if ($q->upload($file_field) ) {
+
+            my $info = $self->extract_meta($file_field);
+
+            my %ids = $self->create_store_thumbs(
+                    $file_field,
+                    $info,
+                    $uploads->{$file_field}->{thumbs});
 			%add_to_valid = (%add_to_valid, %ids);
 
             # insert
             my $id = $self->store_meta($info);
 			
-			$add_to_valid{$i.'_id'} = $id;
+			$add_to_valid{$file_field.'_id'} = $id;
 
-            $self->store_file($q,$i,$id,$info->{extension});
+            $self->store_file($q,$file_field,$id,$info->{extension});
 			
 		}
 	}
 
 	# Now add and delete as needed
-	my $entity = $results->valid;
-	$entity = { %$entity, %add_to_valid };
+	my $entity = { %$form_data, %add_to_valid };
 	map { delete $entity->{$_} } keys %{ $self->{spec} };
 
 	return $entity;
@@ -704,7 +718,7 @@ sub store_meta {
 
 =head2 names
 
-Returns an array of all the upload names, including any thumbnails.
+Returns an array of all the upload names, including any thumbnail names.
 
 =cut
 
@@ -714,6 +728,77 @@ sub names {
 
 	return keys %$imgs,  # primary images
 		map { map { $_->{name}   } @{ $$imgs{$_}->{thumbs} } } keys %$imgs;  # thumbs
+}
+
+
+sub extract_meta {
+    my $self = shift;
+    my $file_field = shift;
+
+    my $q = $self->{query};
+
+   my $fh = $q->upload($file_field);
+   if (!$fh && $q->cgi_error) {
+   		warn $q->cgi_error && return undef;
+	}
+
+    my $tmp_file = $q->tmpFileName($q->param($file_field)) || 
+	 (warn "$0: can't find tmp file for field named $file_field" and return undef);
+
+	require File::MMagic;	
+	my $mm = File::MMagic->new; 
+	my $fm_mt = $mm->checktype_filename($tmp_file);
+
+   my $uploaded_mt = '';
+      $uploaded_mt = $q->uploadInfo($fh)->{'Content-Type'} if $q->uploadInfo($fh);
+
+   # try the File::MMagic, then the uploaded field, then return undef we find neither
+   my $mt = ($fm_mt || $uploaded_mt) or return undef;
+
+   # figure out an extension
+
+   use MIME::Types;
+   my $mimetypes = MIME::Types->new;
+   my MIME::Type $t = $mimetypes->type($mt);
+   my @mt_exts = $t->extensions;
+
+   my ($uploaded_ext) = ($fh =~ m/\.([\w\d]*)?$/);
+
+   my $ext;
+   if (scalar @mt_exts) {
+   		# If the upload extension is one recognized by MIME::Type, use it.
+		if (grep {/^$uploaded_ext$/} @mt_exts) 	 {
+			$ext = $uploaded_ext;
+		}
+		# otherwise, use one from MIME::Type, just to be safe
+		else {
+			$ext = $mt_exts[0];
+		}
+   }
+   else {
+   	   # If is a provided extension but no MIME::Type extension, use that.
+	   # It's possible that there no extension uploaded or found)
+	   $ext = $uploaded_ext;
+   }
+
+
+   # Now get the image dimensions if it's an image 
+	require Image::Magick;
+	my $img = Image::Magick->new();
+	$img->Read(filename=>$tmp_file);
+    my ($width,$height) = $img->Get('width','height');
+
+    return { 
+        mime_type => $uploaded_mt, 
+        extension => ".$ext" ,
+        bytes     => (stat ($fh))[7],
+
+        # only for images
+        width     => $width,
+        height    => $height,
+    };
+    
+
 }
 
 
@@ -733,15 +818,7 @@ the early days, when the documentation was wild and rough.
 
 Barbie, for the first patch. 
 
-=head1 PLANS
-
-The following are planned improvements before a 1.0 release:
-
- - remove Data::FormValidator dependency (Mark Stosberg)
- - add support for DBD::SQLite, DBD::CSV, DBD::ODBC (Barbie)
- - remove need for live database to run 'make test' with Test::MockObject. (Barbie)
-
 =head1 LICENSE 
 
 This program is free software; you can redistribute it and/or modify
-it under the terms as perl itself.
+it under the terms as Perl itself.

@@ -135,12 +135,13 @@ SKIP: {
 	 ok($u, 'Uploader object creation');
 
 	 my $results = Data::FormValidator->check($q,$default);
-
 	 ok($results, 'creating DFV valid object');
+
+     my $form_data = $results->valid;
 
  	 my ($entity);
 	 eval {
- 	 	($entity) = $u->store_uploads($results);
+ 	 	($entity) = $u->store_uploads($form_data);
 
  	 };
 	 is($@,'', 'calling store_uploads');

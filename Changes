@@ -1,5 +1,12 @@
 Revision history for Perl extension CGI::Uploader.
 
+0.50_02 Sun Mar 21, 2004
+    - Removed dependence on Image::Size 
+    - Documentation clarifications (David Manura)
+
+0.50_01 Web Feb 11, 2004
+    - Removed dependence on Data::FormValidator
+
 0.40_01 Sun Feb 8, 2004
     - Extensive documentation updates, thanks to feedback from David Manura.
 
