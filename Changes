@@ -1,5 +1,43 @@
 Revision history for Perl extension CGI::Uploader.
 
+0.70_02 Wed Apr 21, 2004
+    - Removed custom_meta(). This problem space is now addressed by 
+      allowing meta data to be passed to store_uploads(). Also, you could
+      override extract_meta() to add more functionality there.
+    - Added support for storing files based on a MD5 sum of the files 
+      ID. This allows the file storage to scale well for millions of uploads.
+      See the docs for 'file_scheme' for detaills. (Thanks to Randal Schwartz
+      for the suggestion). 
+    - Added option to specify only a max width or max height for thumbnails.
+    - Refactored several interfaces to use named parameters. 
+    - Added 'downsize' option to spec, allowing downsizing of primary images.
+
+0.70_01
+    - Added to binmode() calls to file handles, to possibly help Windows.
+	- Added support for uploading via CGI::Simple
+	- Added experimental support for uploading via Apache::Request
+	- Added Cookbook documentation
+	- Added 'thumbnail_of_id' column to meta data table.
+    - Added delete_thumbs() method
+    - Started to do real 'updates' rather than delete/re-inserts
+	- Cleaned up prequisites in Makefile.PL
+	- Fixed bug and added test for proper thumbnail resizing
+    - More API refactors
+
+0.63_01
+    - Removed some un-needed mentions of Data::FormValidator from tests
+    - added test to verify thumbnail size
+    - refactored resize code into gen_thumb(). This will make it easier 
+      to support other resize modules besides Image::Magick. 
+    - Added Image::Size as a dependency. It's a fast tool for size checking
+      which does not depend on a graphics module being installed. 
+    - Initial support for resizing with GD as a backup. It needs tested. 
+
+0.62_01
+    - Added File::Temp to Makefile.PL. 
+    - Refactored to remove store_thumb(). This should help eventually support other
+      graphics modules besides Image::Magick
+
 0.61_02
     - Minor POD cleanups
 

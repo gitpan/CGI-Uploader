@@ -4,10 +4,15 @@ use 5.005;
 use strict;
 use CGI::Carp;
 use Params::Validate qw/:all/;
+use File::Path;
+use File::Spec;
+use File::Temp qw/tempfile/;
+use Carp::Assert;
+use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '0.61_02';
+$VERSION = '0.70_02';
 
 =head1 NAME
 
@@ -39,167 +44,11 @@ This module is designed to help with the task of managing files uploaded
 through a CGI application. The files are stored on the file system, and
 the file attributes stored in a SQL database. 
 
-=head1 EXAMPLE SETUP
+=head1 QUICK START
 
-Here's a simple form that could be used with this module to maintain
-a photo address book on the web.  The user inputs a name and uploads 
-a photo. This gets stored on the server and a thumbnail is automatically
-generated from the picture and saved as well. The files can then be
-downloaded from given URLs.
-
-=head2 EXAMPLE FORM
-
- <form enctype="multipart/form-data">
-    Friend Name: <input type="text" name="full_name"> <br />
-    Image: <input type="file" name="photo">
-    <input type="submit">
- </form>
-
-Notice that the 'enctype' is important for file uploads to work.
-
-So we have a text field for a 'full_name' and a file upload field named
-'photo'.  
-
-=head2 EXAMPLE DATABASE 
-
-To continue with the example above, we'll define two tables, one 
-will store file upload meta data. This can be used to store the information
-about file uploads related to any number of tables. However, only one other 
-table is required. (Future versions may not require an additional table at all.) 
-
-For our example, we'll create an table to hold names and photos of friends:
-
-	-- Note the Postgres specific syntax here
-    CREATE SEQUENCE upload_id_seq;
-	CREATE TABLE uploads (
-		upload_id   int primary key not null 
-		                default nextval('upload_id_seq'),
-		mime_type   character varying(64),
-		extension   character varying(8), -- file extension
-		width       integer,                 
-		height      integer
-	)
-
- CREATE TABLE address_book (
-    friend_id       int primary key,
-    full_name       varchar(64),
-
-    -- these two reference uploads('upload_id'),
-    photo_id            int,  
-    photo_thumbnail_id  int 
- );
-    
-I<MySQL> is also supported. Check in the distribution for sample SQL 'Create'
-scripts for both I<MySQL> and I<Postgresql> databases.>.
-
-=head2 EXAMPLE FORM VALIDATION
-
-Although it is not required, this module is designed to work with
-L<Data::FormValidator|Data::FormValidator>, which can provide sophisticated
-validation of file uploads. The Data::FormValidator profile to validate the
-above form might look like this:
-
- {
-    validator_packages => [qw(Data::FormValidator::Constraints::Upload)],
-    required => [qw/full_name photo/],
-           constraints => {
-               photo => [
-                   {   
-                       constraint_method => 'file_format',
-                       params => [{
-                            mime_types => [qw!image/jpeg image/png!],
-                        }],
-                   },
-                   {   
-                       constraint_method => 'file_max_bytes',
-                       params => [\1000],
-                   },
-                   {   
-                       constraint_method => 'image_max_dimensions',
-                       params => [\200,\200],
-                   },
-
-            ],
-     }
- }
-
-=head2 EXAMPLE RESULT
-
-Here's our end result: 
-
- address_book table:
-  
- friend_id | full_name | photo_id | photo_thumbnail_id 
- -----------------------------------------------------
- 2         | M. Lewis  |        3 |                 4 
-
-
- uploads table:
-
- upload_id | mime_type | extension | width | height |
- ----------------------------------------------------
- 3         | image/png | .png      |  200  | 400   |    
- 4         | image/png | .png      |   50  | 100    |    
-
-The files are stored on the file system. '4.png' was generated on
-the server a thumbnail of 3.png.
-
- /home/friends/www/uploads/3.png
- /home/friends/www/uploads/4.png
-
-
-=head2 EXAMPLE CODE
-
-To accomplish something like the above, we first need to provide a upload
-specification. This declares all the file form upload fields we will use, as
-well as details of the thumbnails we will create based on these. 
-
-These names need to be identical to the database column names that refer to
-these images, with one difference. In the database, '_id' needs to be added to
-the end of the name. So a form field named 'photo' is referenced a database
-column of 'photo_id'.
-
- # The same object can be used when inserting, updating, deleting 
- # and selecting the uploads.
-
- my $u = CGI::Uploader->new(
- 	spec => {
-        photo => [
-            { name => 'photo_thumbnail', w => 100, h => 100, }
-        ],
-    }
-
- 	updir_url  => 'http://localhost/uploads',
- 	updir_path => '/home/friends/www/uploads',
- 	dbh	       => $dbh,	
-
- );
-
- # get $form_data straight from the CGI environment
- # (For the real world, I recommend validation with Data::FormValidator) 
- my $form_data = $q->Vars; 
-
- my $friend = $u->store_uploads($form_data);
-
- # Now the $friend hash been transformed so it can easily inserted
- # It now looks like this:
- # {
- #    full_name => 'M. Lewis',
- #    photo_id => 3,
- #    photo_thumbnail_id => 4,
- # }
-
- # I like to use SQL::Abstract for easy inserts.
-
- use SQL::Abstract;
- my $sql = SQL::Abstract->new;
- my($stmt, @bind) = $sql->insert('address_book',$friend);
- $dbh->do($stmt,{},@bind);
-
-
-That's a basic example. Read on for more details about what's possible,
-including convenient functions to also help with updating, deleting, and 
-linking to the upload.
+There is a now the L<CGI::Uploader::Cookbook|CGI::Uploader::Cookbook>, which
+provides examples how to use this module as part of a basic BREAD web application. 
+(Browse, Read, Edit, Add, Delete).  
 
 =head1 METHODS
 
@@ -216,6 +65,15 @@ linking to the upload.
 
         # No thumbnails
         img_2 => [],
+
+        # Downsize the large image to these maximum dimensions if it's larger
+        img_3 => {
+            downsize => { w => 430 },
+            thumbs => [
+                { name => 'img_3_thumb_1',  w => 200 },
+            ],
+
+        }
     },
 
  	updir_url  => 'http://localhost/uploads',
@@ -239,6 +97,9 @@ thumbnails don't make sense anyway. Each element in the array is a hash
 reference with the following keys: 'name', 'w', 'h'. These correspond to the 
 name, max width, and max height of the thumbnail.
 
+Also notice there is an option to 'downsize' the large image if needed. Also,
+for the C<downsize> and thumbnail size specifications, only one dimension needs
+to provided, if that's all you care about. 
 
 =item updir_url [required]
 
@@ -267,27 +128,45 @@ omitted.
 =item up_table_map
 
 A hash reference which defines a mapping between the column names used in your 
-SQL table, and those that CGI::Uploader uses . The keys are the CGI::Uploader 
+SQL table, and those that CGI::Uploader uses. The keys are the CGI::Uploader 
 default names. Values are the names that are actually used in your table.
 
 This is not required. It simply allows you to use custom column names.
 
-  upload_id  => 'upload_id',
-  mime_type  => 'mime_type',
-  extension  => 'extension',
-  width      => 'width',
-  height     => 'height',   
+  upload_id       => 'upload_id',
+  mime_type       => 'mime_type',
+  extension       => 'extension',
+  width           => 'width',
+  height          => 'height',   
+  thumbnail_of_id => 'thumbnail_of_id',
 
 You may also define additional column names with a value of 'undef'. This feature
-is only useful if you override the C<extract_meta()> method. Values for these additional
-columns will then be stored by C<store_meta()> and retrieved with C<meta_hashref()>.
+is only useful if you override the C<extract_meta()> method or pass in
+C<$shared_meta> to store_uploads(). Values for these additional columns will
+then be stored by C<store_meta()> and retrieved with C<fk_meta()>.
 
 =item up_seq
 
 For Postgres only, the name of a sequence used to generate the upload_ids.
 Defaults to C<upload_id_seq> if omitted.
 
-=item
+=item file_scheme
+
+ file_scheme => 'md5',
+
+C<file_scheme> controls how file files are stored on the file system. The default
+is C<simple>, which stores all the files in the same directory with names like 
+C<123.jpg>. Depending on your environment, this may be sufficient to store
+10,000 or more files.
+
+As an alternative, you can specify C<md5>, which will create three levels
+of directories based on the first three letters of the ID's md5 sum. The
+result may look like this:
+
+ 2/0/2/123.jpg
+
+This should scale well to millions of files. If you want even more control,
+consider overriding the C<build_loc()> method.
 
 =back 
 
@@ -307,17 +186,23 @@ sub new {
         up_table_map => { 
                           type    => HASHREF,
                           default => {
-                              upload_id  => 'upload_id',
-                              mime_type  => 'mime_type',
-                              extension  => 'extension',
-                              width      => 'width',
-                              height     => 'height',   
+                              upload_id       => 'upload_id',
+                              mime_type       => 'mime_type',
+                              extension       => 'extension',
+                              width           => 'width',
+                              height          => 'height',   
+							  thumbnail_of_id => 'thumbnail_of_id',
 #                              bytes      => 'bytes',
                           }
         },
-		up_seq      => { default=> 'upload_id_seq'},
+		up_seq      => { default => 'upload_id_seq'},
 		spec        => { type => HASHREF },
-		query	    => 0,
+		query	    => { default => CGI->new() } ,
+        file_scheme => {
+             regex   => qr/^simple|md5$/,
+             default => 'simple',
+        },
+
 	});
 	$in{db_driver} = $in{dbh}->{Driver}->{Name};
 	unless (($in{db_driver} eq 'mysql') or ($in{db_driver} eq 'Pg')) {
@@ -401,43 +286,52 @@ So for a file upload field named 'img_field',  the 'img_field' key
 will be removed from the hash and 'img_field_id' will be added, with
 the appropriate upload ID as the value.
 
+store_uploads takes an optional second argument as well:
+
+  my $entity = $u->store_uploads($form_data,$shared_meta);
+
+This is a hash refeference of additional meta data that you want to store
+for all of the images you storing. For example, you may wish to store
+an "uploaded_user_id".
+
+The keys should be column names that exist in your C<uploads> table. The values
+should be appropriate data for the column.  Only the key names defined by the
+C<up_table_map> in C<new()> will be used.  Other values in the hash will be
+ignored.
+
 =cut 
 
 sub store_uploads {
-	validate_pos(@_,1,1);
-	my $self      = shift;
-	my $form_data = shift;
+	validate_pos(@_,1,1,0);
+	my $self        = shift;
+	my $form_data   = shift;
+    my $shared_meta = shift;
+	assert($form_data, 'store_uploads: input hashref missing');
+
 	my $uploads = $self->{spec};
 
-	my (%add_to_valid);
-	my $q = $self->{query};
-
+	my %entity_all_extra;
 	for my $file_field (keys %$uploads) {
         # If we have an uploaded file for this
+        my ($tmp_filename,$uploaded_mt,$file_name) = $self->upload($file_field);
+        if ($tmp_filename) {
+            my $id_to_update = $form_data->{$file_field.'_id'}; 
 
-        if (my ($tmp_filename,$uploaded_mt,$file_name) = $self->upload($file_field) ) {
-            my $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
+            my %entity_upload_extra = $self->store_upload(
+                file_field    => $file_field,
+                src_file      => $tmp_filename,
+                uploaded_mt   => $uploaded_mt,
+                file_name     => $file_name,
+                shared_meta   => $shared_meta,  
+                id_to_update  => $id_to_update, 
+            );
 
-            my $custom_meta = $self->custom_meta($file_field,$meta) || {};
-
-            my %ids = $self->create_store_thumbs(
-                    $file_field,
-                    $meta,
-
-                );
-			%add_to_valid = (%add_to_valid, %ids);
-
-            my $id = $self->store_meta($file_field, {%$meta, %$custom_meta} );
-			
-			$add_to_valid{$file_field.'_id'} = $id;
-
-            $self->store_file($file_field,$id,$meta->{extension},$tmp_filename);
-			
+            %entity_all_extra = (%entity_all_extra, %entity_upload_extra);
 		}
 	}
 
 	# Now add and delete as needed
-	my $entity = { %$form_data, %add_to_valid };
+	my $entity = { %$form_data, %entity_all_extra };
 	map { delete $entity->{$_} } keys %{ $self->{spec} };
 
 	return $entity;
@@ -519,16 +413,16 @@ sub delete_upload {
 		$id = $1;
 	}
 
-    $self->delete_file($file_field,$id);
+    $self->delete_file($id);
     $self->delete_meta($id);
 
 	# return field name to delete
 	return $file_field.'_id';
 }
 
-=head2 meta_hashref()
+=head2 fk_meta()
 
- my $href = $u->meta_hashref($table,\%where,@prefixes);
+ my $href = $u->fk_meta($table,\%where,@prefixes);
 
 Returns a hash reference of information about the file, useful for 
 passing to a templating system. Here's an example of what the contents 
@@ -545,7 +439,7 @@ for these as well.
 
 Here's an example syntax of calling the function:
 
- my $href = $u->meta_hashref('news',{ item_id => 23 },qw/file_1/);
+ my $href = $u->fk_meta('news',{ item_id => 23 },qw/file_1/);
 
 This is going to fetch the file information from the upload table for using the row 
 where news.item_id = 23 AND news.file_1_id = uploads.upload_id.
@@ -562,15 +456,20 @@ complete SQL that used to fetch the data will be built like this:
 
 =cut 
 	
-sub meta_hashref {
-	validate_pos(@_,1,
-		{ type => SCALAR },
-		{ type => HASHREF },
-		(0) x (@_ - 3) );
-	my $self = shift;
-	my $table = shift; 
-	my $where = shift;
-	my @file_fields = @_;
+sub fk_meta {
+    my $self = shift;
+    my %p = validate(@_,{
+        table    => { type => SCALAR },
+        where    => { type => HASHREF },
+        prefixes => { type => ARRAYREF },
+        prevent_browser_caching => { default => 1 }
+    });
+
+
+	my $table = $p{table};
+	my $where = $p{where};
+	my @file_fields = @{ $p{prefixes} };
+
 	my $DBH = $self->{dbh};
 	my %fields;
 	require SQL::Abstract;
@@ -587,32 +486,21 @@ sub meta_hashref {
 	my $qt = ($DBH->{Driver}->{Name} eq 'mysql') ? '`' : '"'; 
 
     my $map = $self->{up_table_map};
-    my $fields_sql = " $map->{upload_id} AS id \n"; 
-    for (keys %$map) {
-        next if ($_ eq 'upload_id');
-        $fields_sql .= ", $map->{$_} AS $_\n";
-    }
-
-	# make a random number available to defeat image caching.
-	my $rand = (int rand 100);
 
 	for my $field (@file_fields) {
 		my $upload = $DBH->selectrow_hashref(qq!
-			SELECT $fields_sql 
+			SELECT * 
 				FROM !.$self->{up_table}.qq!, $table AS t
 				WHERE ($map->{upload_id} = t.${qt}${field}_id${qt} and ($stmt) )!,
 				{},@bind);
 
-		if ($upload->{id}) {
-			$fields{$field.'_url'} = $self->{updir_url}.'/'.$self->build_loc($field,$upload->{id},$upload->{extension})."?$rand";
+            my %upload_fields = $self->transform_meta(
+                meta => $upload,
+                prevent_browser_caching => $p{prevent_browser_caching},
+                prefix => $field,
+            );
+           %fields = (%fields, %upload_fields);
 
-            # The id needs to be handled explicitly, because the loop below will miss it.
-            $fields{$field.'_id'} = $upload->{id}; 
-
-			for my $k (keys %$map) {
-				$fields{$field.'_'.$k} = $upload->{$k} if defined $upload->{$k};
-			}
-		}
 	}
 
 	return \%fields;
@@ -632,64 +520,103 @@ sub names {
 		map { map { $_->{name}   } @{ $$imgs{$_}->{thumbs} } } keys %$imgs;  # thumbs
 }
 
-=head1 SUB-CLASS AND OVERRIDE METHODS
-
-CGI::Uploader implements some methods which are expected to be overridden by
-implementing them in a sub-class module. These methods are as follows:
-
-=head2 custom_meta()
-
- sub custom_meta {
-    my ($self,$file_field,$meta) = @_;
-
-    my $q   = $self->{query};
-    my $dbh = $self->{dbh};
-
-    my $custom_meta;
-    # ...
-    return $custom_meta;
- }
-
- my $meta = $self->custom_meta($file_field,$meta)
-
-This method is used to store additional meta data about your file upload besides
-what is automatically discovered with C<extract_meta()>. For example, you 
-might want to store a title and description of the file. 
-
-Input:
-  - the file field name. This is the file field name or thumbnail name given 
-    in the C<spec>.
-  - hashref of extracted meta data. They keys are: 
-    C<mime_type> and C<extension>. Images will also have C<width>, and C<height>.
-
-Output:
-  - A hashref of your custom meta data.
-
-There is no need to repeat the input keys in the hashref you return.
-However, if you do include one of the existing keys, your value
-will override the original. Each key must correspond to a key
-in C<up_table_map>. Otherwise it will be ignored.
-
-You may find the L<CGI::Expand> module here. It makes it easy to  
-generate a hash ref from a group of CGI parameters which all
-have the same prefix. 
-
-=cut
-
-sub custom_meta {
-    my ($self,$file_field,$meta) = @_;
-    my $custom_meta = {};
-    # ...
-    return $custom_meta;
-}
-
 =head1 METHODS FOR EXTENDING CGI::UPLOADER
 
 These are methods that are used internally. You shouldn't need to use them
 for most operations. However, if you are doing something more complex,
 you may want to override one of these methods.
 
-=head2 extract_meta(file_field) 
+=head2 store_upload()
+
+ my %entity_upload_extra = $u->store_upload(
+    file_field    => $file_field,
+    src_file      => $tmp_filename,
+    uploaded_mt   => $uploaded_mt,
+    file_name     => $file_name,
+    shared_meta   => $shared_meta,  # optional
+    id_to_update  => $id_to_update, # optional
+ );
+
+Does all the processing for a single upload, after it has been uploaded
+to a temp file already.
+
+It returns a hash of key/value pairs as described in L<store_uploads()>.
+
+=cut
+
+sub store_upload {
+    my $self = shift;
+    my %p = validate(@_, {
+            file_field    => { type => SCALAR },
+            src_file      => { type => SCALAR },
+            uploaded_mt   => { type => SCALAR },
+            file_name     => { type => SCALAR | GLOBREF },
+            shared_meta   => { type => HASHREF | UNDEF,    default => {} },
+            id_to_update  => { regex => qr/^\d*$/, optional => 1 },
+        });
+
+    my (
+        $file_field,
+        $tmp_filename,
+        $uploaded_mt,
+        $file_name,
+        $shared_meta,
+        $id_to_update,
+    ) = ($p{file_field},$p{src_file},$p{uploaded_mt},$p{file_name},$p{shared_meta},$p{id_to_update});
+
+    my $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
+
+    # downsize primary image if needed
+    my $downsize = $self->{spec}{$file_field}{downsize};
+#use Data::Dumper;
+#warn Dumper ($downsize,$meta);
+
+    my ($curr_w, $curr_h) = imgsize($tmp_filename);
+    if (
+            (defined $downsize->{w} and $downsize->{w} < $curr_w) 
+        or  (defined $downsize->{h} and $downsize->{h} < $curr_h) 
+        ) {
+         $tmp_filename  = $self->gen_thumb(
+                filename => $tmp_filename,
+                w => $downsize->{w},
+                h => $downsize->{h},
+            );
+        }
+
+        $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
+
+        $shared_meta ||= {};
+        my $all_meta = { %$meta, %$shared_meta };   
+
+    my $id;
+    # If it's an update
+    if ($id = $id_to_update) {
+        # delete old thumbnails before we create new ones
+        $self->delete_thumbs($id);
+    }
+
+    # insert or update will be performed as approriate. 
+    $id = $self->store_meta(
+        $file_field, 
+        $all_meta,
+        $id );
+
+
+    $self->store_file($file_field,$id,$meta->{extension},$tmp_filename);
+
+    my %ids = $self->create_store_thumbs(
+        $file_field,
+        $all_meta,
+        $tmp_filename,
+        $id,
+    );
+
+    return (%ids, $file_field.'_id' => $id);
+
+}
+ 
+
+=head2 extract_meta() 
 
  $self->extract_meta($file_field)
 
@@ -718,25 +645,31 @@ sub extract_meta {
     my $file_name = shift;
     my $uploaded_mt = shift || '';
 
-   # figure out an extension
-   my ($uploaded_ext) = ($file_name =~ m/\.([\w\d]*)?$/);
+    
+
 
    require File::MMagic;	
    my $mm = File::MMagic->new; 
-
 
    my $fm_mt = $mm->checktype_filename($tmp_filename);
 
    # If File::MMagic didn't find a mime_type, we'll use the uploaded one.
    my $mt = ($fm_mt || $uploaded_mt);
+   assert($mt,'found mime type');
+
 
    use MIME::Types;
    my $mimetypes = MIME::Types->new;
    my MIME::Type $t = $mimetypes->type($mt);
-   my @mt_exts = $t->extensions;
+   my @mt_exts = $t ? $t->extensions : undef;
 
    my $ext;
-   if (scalar @mt_exts) {
+
+   # figure out an extension
+   my ($uploaded_ext) = ($file_name =~ m/\.([\w\d]*)?$/);
+
+   # If there is at least one MIME-type found
+   if ($mt_exts[0]) {
    		# If the upload extension is one recognized by MIME::Type, use it.
 		if (grep {/^$uploaded_ext$/} @mt_exts) 	 {
 			$ext = $uploaded_ext;
@@ -752,18 +685,20 @@ sub extract_meta {
 	   $ext = $uploaded_ext;
    }
 
+   if ($ext) {
+        $ext = ".$ext" if $ext;
+   }
+   else {
+	   die "no extension found for file name: $file_name";
+   }
+
 
    # Now get the image dimensions if it's an image 
-	require Image::Magick;
-	my $img = Image::Magick->new();
-	my $err = $img->Read(filename=>$tmp_filename);
-
-
-    my ($width,$height) = $img->Get('width','height');
+    my ($width,$height) = imgsize($tmp_filename);
 
     return { 
         mime_type => $mt, 
-        extension => ".$ext" ,
+        extension => $ext,
         bytes     => (stat ($tmp_filename))[7],
 
         # only for images
@@ -785,6 +720,7 @@ Input:
  - A hashref of key/value pairs to be store. Only the key names defined by
 the C<up_table_map> in C<new()> will be used. Other values in the hash will be
 ignored.
+ - Optionally, an upload ID can be passed, causing an 'Update' to happen instead of an 'Insert' 
 
 Output:
   - The id of the file stored. The id is generated by store_meta(). 
@@ -792,24 +728,25 @@ Output:
 =cut
 
 sub store_meta {
-    validate_pos(@_,1,1,1);
+    validate_pos(@_,1,1,1,0);
 	my $self = shift;
 
     # Right now we don't use the the file field name
     # It seems like a good idea to have in case you want to sub-class it, though. 
     my $file_field  = shift;
 	my $href = shift;
+	my $id = shift;
 
 	my $DBH = $self->{dbh};
 
 	require SQL::Abstract;
 	my $sql = SQL::Abstract->new;
-	my $id;
     my $map = $self->{up_table_map};
-
     my %copy = %$href;
 
-    if ($self->{db_driver} eq 'Pg') {
+    my $is_update = 1 if $id;
+
+    if (!$is_update && $self->{db_driver} eq 'Pg') {
         $id = $DBH->selectrow_array("SELECT NEXTVAL('".$self->{up_seq}."')");
         $copy{upload_id} = $id;
     }
@@ -829,10 +766,16 @@ sub store_meta {
         delete $copy{$_};
     }
 
-    my ($stmt,@bind) = $sql->insert($self->{up_table},\%copy);
+    my ($stmt,@bind); 
+    if ($is_update) {
+     ($stmt,@bind)   = $sql->update($self->{up_table},\%copy, { $map->{upload_id} => $id });
+    }
+    else {
+     ($stmt,@bind)   = $sql->insert($self->{up_table},\%copy);
+    }
 
     $DBH->do($stmt,{},@bind);
-    if ($self->{db_driver} eq 'mysql') {
+    if (!$is_update && $self->{db_driver} eq 'mysql') {
         $id = $DBH->{'mysql_insertid'};
     }
 
@@ -844,6 +787,8 @@ sub store_meta {
  my %thumb_ids = $self->create_store_thumbs(
                          $file_field,
                          $meta_href,
+                         $tmp_filename,
+						 $thumbnail_of_id,
                         );
 
 This method is responsible for creating and storing 
@@ -852,58 +797,56 @@ any needed thumnbnails.
 Input:
  - file field name
  - a hash ref of meta data, as C<extract_meta> would produce 
-
+ - path to temporary file of the file upload
+ - ID of upload that thumbnails will be made from
 
 =cut
 
 sub create_store_thumbs {
 	validate_pos(@_,
-        1,                    # $self
-		{ type => SCALAR  },  # $file_field
-		{ type => HASHREF  },   # $info 
+        1,                   # $self
+		{ type => SCALAR  }, # $file_field
+		{ type => HASHREF }, # $meta
+		{ type => SCALAR  }, # $tmp_filename
+		{ type => SCALAR  }, # $thumbnail_of_id
 	);
 	my $self = shift;
 	my $file_field = shift;
-	my $info = shift;
+	my $meta = shift;
+    my $tmp_filename = shift;
+	my $thumbnail_of_id  = shift;
 
 	my $thumbs = $self->{spec}{$file_field}{thumbs};
 	my $q = $self->{query};
 	my %out;
 
-	require Image::Magick;
-	my $img = Image::Magick->new();
-
-	$img->Read(filename=>$q->tmpFileName($q->param($file_field)));
-
-	my ($w,$h) = ($info->{width},$info->{height});
+	my ($w,$h) = ($meta->{width},$meta->{height});
 	for my $thumb (@$thumbs) {
+        my $thumb_tmp_filename;
 		# resize as needed
 		if ((defined $w and defined $h) and ($w > $thumb->{w} or $h > $thumb->{h})) {
-			$img->Resize($thumb->{w}.'x'.$thumb->{h}); 
+            $thumb_tmp_filename = $self->gen_thumb(
+                filename => $tmp_filename,
+                w => $thumb->{w},
+                h => $thumb->{h});
 		}
+        # If the file is already reasonably sized, just use theh original tmp filename
+        else {
+            $thumb_tmp_filename = $tmp_filename;
+        }
 
 		# inherit mime-type and extension from parent
-		my %t_info =  %$info;
-		($t_info{width}, 
-			$t_info{height}) = $img->Get('width','height');
-
-        my $custom_meta = $self->custom_meta($thumb->{name},\%t_info) || {};
+		# set as thumbnail of parent
+		my %t_info =  (%$meta, thumbnail_of_id => $thumbnail_of_id);
+		($t_info{width}, $t_info{height}) = imgsize($thumb_tmp_filename);
 
 		# Insert		
-		my $id = $self->store_meta($thumb->{name}, {%t_info, %$custom_meta });
+		my $id = $self->store_meta($thumb->{name}, \%t_info );
 
 		# Add to output hash
 		$out{$thumb->{name}.'_id'} = $id;
 
-        my $err = $self->store_thumb($thumb->{name},$id,$t_info{extension},$img,);
-        if ($err) {
-            warn $err;
-            my $code;
-            # codes > 400 are fatal 
-            if ((($code) = $err =~ /(\d+)/) and ($code > 400)) {
-                die "$err";
-            }
-        }
+        $self->store_file($thumb->{name},$id,$t_info{extension},$thumb_tmp_filename);
 	}
 	return %out;
 }
@@ -920,6 +863,8 @@ Output:
  - Uploaded MIME Type
  - Name of uploaded file (The value of the file form field)
 
+Currently CGI.pm and CGI::Simple are supported. 
+
 =cut 
 
 sub upload {
@@ -927,23 +872,45 @@ sub upload {
     my $file_field = shift;
 
    my $q = $self->{query};
-   my $fh = $q->upload($file_field);
-   if (!$fh && $q->cgi_error) {
-   		warn $q->cgi_error && return undef;
-	}
 
+   my $fh;	
    my $mt = '';
-   $mt = $q->uploadInfo($fh)->{'Content-Type'} if $q->uploadInfo($fh);
-
    my $filename = $q->param($file_field);
 
-   # We could rely on the tmp file created by CGI.pm, but instead we create our own.
-   use File::Temp qw/tempfile/;
+   if ($q->isa('CGI::Simple') ) {
+	   $fh = $q->upload($filename); 
+	   $mt = $q->upload_info($filename, 'mime' );
+
+	   if (!$fh && $q->cgi_error) {
+		   warn $q->cgi_error && return undef;
+	   }
+   }
+   elsif ( $q->isa('Apache::Request') ) {
+	    my $upload = $q->upload($file_field);
+		$fh = $upload->fh;
+		$mt = $upload->type;
+   }
+   # default to CGI.pm behavior
+   else {
+	   $fh = $q->upload($file_field);
+	   $mt = $q->uploadInfo($fh)->{'Content-Type'} if $q->uploadInfo($fh);
+
+	   if (!$fh && $q->cgi_error) {
+		   warn $q->cgi_error && return undef;
+	   }
+   }
+
+   return undef unless ($fh && $filename);
+   #assert($fh, 		'have upload file handle');
+   #assert($filename,'have upload file name');
+
+
    my ($tmp_fh, $tmp_filename) = tempfile('CGIuploaderXXXXX', UNLINK => 1);
+   binmode($tmp_fh);
 
    require File::Copy;
    import  File::Copy;
-   copy($fh,$tmp_filename);
+   copy($fh,$tmp_filename) || die "upload: unable to create tmp file: $!";
 
     return ($tmp_filename,$mt,$filename);
 } 
@@ -979,9 +946,8 @@ of the file to delete.
 =cut
 
 sub delete_file {
-    validate_pos(@_,1,1,1);
+    validate_pos(@_,1,1);
     my $self = shift;
-    my $file_field = shift;
     my $id   = shift;
 
     my $map = $self->{up_table_map};
@@ -991,9 +957,10 @@ sub delete_file {
         SELECT $map->{extension}
             FROM $self->{up_table}
             WHERE $map->{upload_id} = ?",{},$id);
-    $ext || die "found no extension in meta data for $file_field. Deleting file failed.";
+    $ext || die "found no extension in meta data for ID $id. Deleting file failed.";
 
-    my $file = $self->{updir_path}.'/'.$self->build_loc($file_field,$id,$ext);
+
+    my $file = $self->{updir_path}.'/'.$self->build_loc($id,$ext);
 
     if (-e $file) {  
         unlink $file || die "couldn't delete upload  file: $file:  $!";
@@ -1004,21 +971,33 @@ sub delete_file {
 
 }
 
-=head2 store_thumb()
+=head2 delete_thumbs()
 
-Currently requires an Image::Magick object. API subject to change.
-(So I'm not documenting the interface now. :)
+ $self->delete_thumbs($id);
+
+Delete the thumbnails for a given file ID, from the file system and the database
 
 =cut
 
-sub store_thumb {
-    my $self = shift;
-    my ($file_name,$id,$ext,$img) = @_;
+sub delete_thumbs {
+    validate_pos(@_,1,1);
+    my ($self,$id) = @_;
 
-    my $loc = $self->build_loc($file_name,$id,$ext);
-    my $err = $img->Write($self->{updir_path}.'/'.$loc);
-    return $err;
+    my $dbh = $self->{dbh};
+    my $map = $self->{up_table_map};
+
+    my $thumb_ids_aref = $dbh->selectcol_arrayref(
+        "SELECT   $map->{upload_id} 
+            FROM  ".$self->{up_table}. "
+            WHERE $map->{thumbnail_of_id} = ?",{},$id) || [];
+
+    for my $thumb_id (@$thumb_ids_aref) {
+        $self->delete_file($thumb_id);
+        $self->delete_meta($thumb_id);
+    }
+
 }
+
 
 =head2 store_file()
 
@@ -1040,33 +1019,205 @@ sub store_file {
     validate_pos(@_,1,1,1,1,1);
     my $self = shift;
     my ($file_field,$id,$ext,$tmp_file) = @_;
+	assert($ext, 'have extension');
+	assert($id,'have id');
+	assert(-f $tmp_file,'tmp file exists');
 
-    my $q = $self->{query};
-    
     require File::Copy;	
     import File::Copy;
-
-    copy($tmp_file, $self->{updir_path}."/". $self->build_loc($file_field,$id,$ext) )
-    || die 'Unexpected error occured when uploading the image.';
+    copy($tmp_file, File::Spec->catdir($self->{updir_path},$self->build_loc($id,$ext)) )
+    || die "Unexpected error occured when uploading the image: $!";
 
 }
 
 =head2 build_loc()
 
- my $up_loc = $self->build_loc($file_field,$id,$ext);
+ my $up_loc = $self->build_loc($id,$ext);
 
 Builds a path to access a single upload, relative to C<updir_path>.  
-This is used to both file-system and URL access.
+This is used to both file-system and URL access. Also see the C<file_scheme> 
+option to C<new()>, which affects it's behavior. 
 
 =cut
 
 sub build_loc {
-    validate_pos(@_,1,1,1,1);
-    my ($self,$file_field,$id,$ext) = @_;
+    validate_pos(@_,1,1,1);
+    my ($self,$id,$ext) = @_;
 
-    # We don't use $file_field, but a sub-class might want it.
+    my $scheme = $self->{file_scheme};
 
-    return  "$id$ext";
+    my $loc;
+    if ($scheme eq 'simple') {
+        $loc = "$id$ext";
+    }     
+    elsif ($scheme eq 'md5') {
+        require Digest::MD5;
+        import Digest::MD5 qw/md5_hex/;
+        my $md5_path = md5_hex($id);
+        $md5_path =~ s|^(.)(.)(.).*|$1/$2/$3|;
+
+        my $full_path = $self->{updir_path}.'/'.$md5_path;
+        unless (-e $full_path) {
+            mkpath($full_path);
+        }
+
+        $loc = "$md5_path/$id$ext";
+    }
+}
+
+=head2 gen_thumb
+
+ ($thumb_tmp_filename)  = $self->gen_thumb(
+    filename => $orig_filename,
+    w => $width,
+    h => $height,
+    );
+
+This function creates a copy of given image file and resizes the copy to the
+provided width and height.
+
+Input:
+    filename => filename of source image 
+    w => max width of thumbnail
+    h => max height of thumbnail
+
+One or both  of C<w> or C<h> is required.
+
+Output:
+    - filename of generated tmp file for the thumbnail 
+
+=cut
+
+sub gen_thumb {
+    my $self = shift;
+    my %p = validate(@_,{
+            filename => {type => SCALAR },
+            w => { type => SCALAR | UNDEF, regex => qr/^\d*$/, optional => 1, },
+            h => { type => SCALAR | UNDEF, regex => qr/^\d*$/, optional => 1 },
+        });
+    die "must supply 'w' or 'h'" unless (defined $p{w} or defined $p{h});
+
+
+    my $orig_filename = $p{filename};
+    my ($orig_w,$orig_h,$orig_fmt) = imgsize($orig_filename);
+
+    my $target_h = $p{h};
+    my $target_w = $p{w};
+
+    $target_h = sprintf("%.1d", ($orig_h * $target_w) / $orig_w) unless $target_h;
+    $target_w = sprintf("%.1d", ($orig_w * $target_h) / $orig_h) unless $target_w;
+
+    my ($thumb_tmp_fh, $thumb_tmp_filename) = tempfile('CGIuploaderXXXXX', UNLINK => 1);
+    binmode($thumb_tmp_fh);
+
+    eval { require Image::Magick; };
+    my $have_image_magick = !$@;
+    eval { require GD; };
+    my $have_gd = !$@; 
+
+     my %gd_map = (
+         'PNG' =>  'png',
+         'JPG'  => 'jpeg',
+         'GIF'  => 'gif',
+     );
+
+    if ($have_image_magick) {
+        my $img = Image::Magick->new();
+        $img->Read(filename=>$orig_filename);
+        $img->Resize($target_w.'x'.$target_h); 
+        my $err = $img->Write($thumb_tmp_filename);
+        if ($err) {
+            warn $err;
+            my $code;
+            # codes > 400 are fatal 
+            die $err if ((($code) = $err =~ /(\d+)/) and ($code > 400));
+        }
+    }
+    elsif ($have_gd and (grep {m/^$orig_fmt$/} keys %gd_map)) {
+		die "Image::Magick wasn't found and GD support is not complete. 
+			Install Image::Magick or fix GD support. ";
+
+        # This formula was figured out by Ehren Nagel
+        my ($actual_w,$actual_h) = ($target_w,$target_h);
+        my $potential_w  = ($target_h/$orig_h)*$orig_w;
+        my $potential_h  = ($target_w/$orig_w)*$orig_h;
+
+        if  (($orig_h > $orig_w ) and ($potential_w < $target_w)) {
+            $actual_w = $potential_w;
+        }
+        elsif (($orig_h > $orig_w ) and ($potential_w >= $target_w)) {
+            $actual_h = $potential_h;
+        }
+        elsif (($orig_h <=  $orig_w ) and ($potential_h < $target_h ))   {
+            $actual_h = $potential_h;
+        }
+        elsif (($orig_h <=  $orig_w ) and ($potential_h >= $target_h ))   {
+            $actual_w = $potential_w;
+        }
+
+        my $orig  = GD::Image->new("$orig_filename") || die "$!";
+        my $thumb = GD::Image->new( $actual_w,$actual_h );
+        $thumb->copyResized($orig,0,0,0,0,$actual_w,$actual_h,$orig_w,$orig_h);
+        my $meth = $gd_map{$orig_fmt};
+        no strict 'refs';
+        no strict 'subs';
+        binmode($thumb_tmp_fh); 
+        print $thumb_tmp_fh, $thumb->$meth;
+    }
+    else {
+        die "No graphics module found for image resizing. Install Image::Magick or GD.
+        ( GD is only good for  PNG and JPEG, but may be easier to get installed ): $@ "
+    }
+
+    assert ($thumb_tmp_filename, 'thumbnail tmp file created');
+    return $thumb_tmp_filename;
+
+}
+
+# Documentation? 
+
+sub transform_meta  {
+    my $self = shift;
+    my %p = validate(@_, {
+        meta   => { type => HASHREF },
+        prefix => { type => SCALAR  },
+        prevent_browser_caching => { default => 1 },
+        fields => { type => ARRAYREF ,
+                    default => [qw/id url width height/], 
+                },
+        });
+
+    my $map = $self->{up_table_map};
+
+    my %result;
+
+    my $qs;
+    if ($p{prevent_browser_caching})  {
+        # a random number to defeat image caching. We may want to change this later.
+        my $rand = (int rand 100);
+        $qs = "?$rand";
+    }
+
+    my %fields = map { $_ => 1 } @{ $p{fields} }; 
+
+    if ($fields{url}) {
+        $result{$p{prefix}.'_url'} = $self->{updir_url}.'/'.
+            $self->build_loc($p{meta}{ $map->{upload_id}   },$p{meta}{extension}).$qs ;
+        delete $fields{url};
+    }
+
+    if (exists $fields{id}) {
+        $result{$p{prefix}.'_id'} = $p{meta}->{ $map->{upload_id} };
+        delete $fields{id};
+    }
+
+    for my $k (keys %fields) {
+        my $v = $p{meta}->{ $map->{$k} };
+        $result{$p{prefix}.'_'.$k} = $v if defined $v;
+    }
+
+    return %result;
+
 
 }
 

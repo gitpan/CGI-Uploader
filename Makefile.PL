@@ -112,14 +112,24 @@ WriteMakefile(
     'NAME'		=> 'CGI::Uploader',
     'VERSION_FROM'	=> 'lib/CGI/Uploader.pm', # finds $VERSION
     'PREREQ_PM'		=> {
+		'Carp::Assert'		  => 0,
 		'CGI::Carp' 		  => 0,
-		'Params::Validate'    => 0,
-        'DBI'                 => 0,
-        'CGI'                 => 0,
+        'Digest::MD5'         => 0,
 		'File::Copy'		  => 0,
-		'SQL::Abstract'	      => 0,
+		'File::Spec'		  => 0,
+		'File::MMagic'	      => 1.22,		
+        'File::Path'          => 0,
 		'Image::Magick'		  => 0,
+		'MIME::Type'		  => 0, 
+		'MIME::Types'		  => 0,
+		'Params::Validate'    => 0,
+		'SQL::Abstract'	      => 0,
+        'CGI'                 => 0,
+        'DBI'                 => 0,
+        'File::Temp'          => 0,
+        'Image::Size'         => 0,  
         'Test::DatabaseRow'   => 0,
+        'Test::Differences'   => 0,
 	}, 
     ($] >= 5.005 ?    ## Add these new keywords supported since 5.005
       (

@@ -3,5 +3,8 @@ CREATE TABLE uploads (
 	mime_type  character varying(64),
 	extension  character varying(8), -- file extension
 	width      integer,                 
-	height     integer
+	height     integer,
+
+	-- refer to the ID of the image used to create this thumbnail, if any
+	thumbnail_of_id integer
 )

@@ -2,14 +2,20 @@
 
 use Test::More qw/no_plan/;
 use Test::Differences;
+use Carp::Assert;
 use lib 'lib';
 use strict;
 
 BEGIN { use_ok('CGI::Uploader') };
 BEGIN { use_ok('DBI') };
 BEGIN { use_ok('CGI') };
-BEGIN { use_ok('Data::FormValidator') };
 BEGIN { use_ok('Test::DatabaseRow') };
+BEGIN { use_ok('Image::Magick') };
+BEGIN { use_ok('Image::Size') };
+
+
+
+#use Test::Without::Module qw( Image::Magick );
 
 %ENV = (
 	%ENV,
@@ -86,13 +92,14 @@ SKIP: {
 
 	 my %imgs = (
 		'100x100_gif' => [
-			{ name => 'img_1_thumb_1', w => 50, h => 50 },
-			{ name => 'img_1_thumb_2', w => 50, h => 50 },
+			{ name => 'img_1_thumb_1', w => 50, h => 60 },
+			{ name => 'img_1_thumb_2', w => 35, h => 25 },
 		],
 		'300x300_gif' => [
-			{ name => 'img_2_thumb_1', w => 50, h => 50 },
-			{ name => 'img_2_thumb_2', w => 50, h => 50 },
+			{ name => 'img_2_thumb_1', w => 210, h => 200 },
+			{ name => 'img_2_thumb_2', w => 150, h => 140 },
 		],
+        '20x16_png' => { downsize => { w => 10 } },
 	 );
 
 	 my $u = 	CGI::Uploader->new(
@@ -107,21 +114,23 @@ SKIP: {
      my $form_data = $q->Vars;
 
  	 my ($entity);
-	 eval {
- 	 	($entity) = $u->store_uploads($form_data);
-
- 	 };
+	 eval { $entity = $u->store_uploads($form_data) };
 	 is($@,'', 'calling store_uploads');
 
-	 my @pres = $u->names;
+use Data::Dumper;
+    my @pres = grep {!m/png/} $u->names;
 	 ok(eq_set([grep {m/_id$/} keys %$entity ],[map { $_.'_id'} @pres]),
-	 	'store_uploads entity additions work');
+	 	'store_uploads entity additions work') || diag Dumper ($entity);
 
 	ok(not(grep {m/^(300x300_gif|100x100_gif)$/} keys %$entity),
            'store_uploads entity removals work');
 
 	my @files = <t/uploads/*>;	
 	ok(scalar @files == 6, 'expected number of files created');
+
+    my ($t_w,$t_h) = imgsize('t/uploads/3.gif');  
+    is($t_w,140,'width  of thumbnail is correct');
+    is($t_h,140,'height of thumbnail is correct');
 
 	$Test::DatabaseRow::dbh = $DBH;
 	row_ok( sql   => "SELECT * FROM uploads  ORDER BY upload_id LIMIT 1",
@@ -154,11 +163,14 @@ SKIP: {
 	ok(scalar @files == 3, 'expected number of files removed');
 
 	$row_cnt = $DBH->selectrow_array("SELECT count(*) FROM uploads ");
-	ok($row_cnt == 3, 'number of rows removed');
+	ok($row_cnt == 3, "Expected number of rows remaining:  ($row_cnt)");
 
 	my $qt = ($drv eq 'mysql') ? '`' : '"'; # mysql has a funny way of quoting
 	ok($DBH->do(qq!INSERT INTO cgi_uploader_test (item_id,${qt}100x100_gif_id$qt,img_1_thumb_1_id) VALUES (1,6,5)!), 'test data insert');
-	my $tmpl_vars_ref = $u->meta_hashref('cgi_uploader_test',{item_id => 1},qw/100x100_gif img_1_thumb_1/);
+	my $tmpl_vars_ref = $u->fk_meta(
+        table   => 'cgi_uploader_test',
+        where   => {item_id => 1},
+        prefixes => [qw/100x100_gif img_1_thumb_1/]);
 
     use Data::Dumper;
 	ok (eq_set(
@@ -167,18 +179,106 @@ SKIP: {
                 img_1_thumb_1_width 
                 img_1_thumb_1_url 
                 img_1_thumb_1_id
-                img_1_thumb_1_extension
-                img_1_thumb_1_mime_type
 
 				100x100_gif_height 
                 100x100_gif_width 
                 100x100_gif_url 
                 100x100_gif_id
-                100x100_gif_extension
-                100x100_gif_mime_type
 			/],
 			[keys %$tmpl_vars_ref],
-		), 'meta_hashref keys returned') || diag Dumper($tmpl_vars_ref);
+		), 'fk_meta keys returned') || diag Dumper($tmpl_vars_ref);
+
+    row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= 4",
+                tests => [ 
+					mime_type        => 'image/gif',
+					extension        => '.gif',
+				    width	         => 100,		
+					height	         => 100,
+					thumbnail_of_id  => undef,
+					],
+                label => "upload 4 is all good");
+
+    row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= 5",
+                tests => [ 
+					mime_type       => 'image/gif',
+					extension       => '.gif',
+				    width	        => 50,		
+					height	        => 50,
+					thumbnail_of_id => 4,
+					],
+                label => "upload 5 is all good");
+
+    row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= 6",
+                tests => [ 
+					mime_type       => 'image/gif',
+					extension       => '.gif',
+				    width	        => 25,		
+					height	        => 25,
+					thumbnail_of_id => 4,
+					],
+                label => "upload 6 is all good");
+
+
+close(IN);
+
+####
+
+
+# Simulate another upload, this time with the files in the reverse fields
+
+# 
+             my %entity_upload_extra = $u->store_upload(
+                 file_field    => '300x300_gif',
+                 src_file      => 't/200x200.gif',
+                 uploaded_mt   => 'image/gif',
+                 file_name     => '200x200.gif',
+                 id_to_update  => 4,
+             );
+
+         row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= 4",
+             tests => [ 
+             mime_type        => 'image/gif',
+             extension        => '.gif',
+             width	         => 200,		
+             height	         => 200,
+             thumbnail_of_id  => undef,
+             ],
+             label =>
+             "image that had the ID of the 100x100 image should house a 300x300 image");
+
+###
+
+	my $found_old_thumbs = $DBH->selectcol_arrayref("
+			SELECT upload_id FROM uploads WHERE upload_id IN (5,6)");
+	is(scalar @$found_old_thumbs,0, 
+	  'The original thumbnails of the 100x100 image should be deleted');
+	
+###
+ 
+my $how_many_thumbs = $DBH->selectrow_array("SELECT 
+		count(upload_id) FROM uploads WHERE thumbnail_of_id = 4");
+	is($how_many_thumbs,2,	
+		'two new thumbnails for this image should have been generated');
+
+##########
+
+    my %png;
+   eval {
+       %png = $u->store_upload(
+           file_field  => '20x16_png',
+           src_file    => 't/20x16.png',
+           uploaded_mt => 'image/png',
+           file_name   => '20x16.png',
+       );
+   };
+   is($@,'', 'store_upload() survives');
+   
+   my ($db_height,$db_width) =$DBH->selectrow_array(
+       "SELECT height, width
+       FROM uploads 
+       WHERE upload_id = 9");
+   is($db_height, 8, "downsize: correct height");
+   is($db_width, 10, "downsize: correct width");
 
 };
 
@@ -197,4 +297,11 @@ SKIP: {
  	}
  };
  
+
+package CGIpmWorkAround;
+use overload
+    '""'  => sub { return '200x200.gif' },
+#    'cmp' => sub { return 1 },
+    'fallback'=>1;
+
 

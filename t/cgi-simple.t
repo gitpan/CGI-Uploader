@@ -1,16 +1,29 @@
-#########################
-# Please don't remove the next line. Thanks.
-# arch-tag: Mark_Stosberg_<mark@summersault.com>--2004-03-27_21:15:22
+# don't edit the next line. Thanks.
+# arch-tag: 7d260dea-947d-4183-a2ed-5b32c0c46b0a 
 
-use Test::More qw/no_plan/;
-use Test::Differences;
+#########################
+
+use Test::More;
 use lib 'lib';
 use strict;
 
+eval { 
+	require CGI::Simple; 
+	import CGI::Simple qw(-upload);
+};
+if($@) {
+    plan skip_all => 'CGI::Simple not available'
+}
+else {
+    plan 'no_plan';
+}
+
 BEGIN { use_ok('CGI::Uploader') };
 BEGIN { use_ok('DBI') };
-BEGIN { use_ok('CGI') };
 BEGIN { use_ok('Test::DatabaseRow') };
+BEGIN { use_ok('Image::Size') };
+BEGIN { use_ok('Test::Differences') };
+
 
 %ENV = (
 	%ENV,
@@ -43,7 +56,7 @@ open(IN,'<t/upload_post_text.txt') || die 'missing test file';
 binmode(IN);
 
 *STDIN = *IN;
-my $q = new CGI;
+my $q = new CGI::Simple;
 
 
 eval {
@@ -85,14 +98,6 @@ ok($created_test_table, 'creating test table');
 SKIP: {
 	 skip "Couldn't create database table", 20 unless $created_up_table;
 
-     # We alter the table to test our mapping
-     $DBH->do("ALTER TABLE uploads RENAME upload_id TO upload_id_b");
-     $DBH->do("ALTER TABLE uploads RENAME mime_type TO mime_type_b");
-     $DBH->do("ALTER TABLE uploads RENAME extension TO extension_b");
-     $DBH->do("ALTER TABLE uploads RENAME width TO width_b");
-     $DBH->do("ALTER TABLE uploads RENAME height TO height_b");
-     $DBH->do("ALTER TABLE uploads ADD COLUMN custom char(64)");
-
 	 my %imgs = (
 		'100x100_gif' => [
 			{ name => 'img_1_thumb_1', w => 50, h => 50 },
@@ -110,14 +115,6 @@ SKIP: {
 		dbh => $DBH,
 		query => $q,
 		spec => \%imgs,
-        up_table_map => {
-            upload_id => 'upload_id_b',
-            mime_type => 'mime_type_b',
-            extension => 'extension_b',
-            width     => 'width_b',
-            height    => 'height_b',
-            custom    => undef,
-        }
 	 );
 	 ok($u, 'Uploader object creation');
 
@@ -140,23 +137,27 @@ SKIP: {
 	my @files = <t/uploads/*>;	
 	ok(scalar @files == 6, 'expected number of files created');
 
+    my ($t_w,$t_h) = imgsize('t/uploads/2.gif');  
+    is($t_w,50,'width  of thumbnail is correct');
+    is($t_h,50,'height of thumbnail is correct');
+
 	$Test::DatabaseRow::dbh = $DBH;
-	row_ok( sql   => "SELECT * FROM uploads  ORDER BY upload_id_b LIMIT 1",
+	row_ok( sql   => "SELECT * FROM uploads  ORDER BY upload_id LIMIT 1",
                 tests => {
 					'eq' => {
-						mime_type_b => 'image/gif',
-						extension_b => '.gif',
+						mime_type => 'image/gif',
+						extension => '.gif',
 					},
 					'=~' => {
-						upload_id_b => qr/^\d+/,
-						width_b 	=> qr/^\d+/,
-						height_b 	=> qr/^\d+/,
+						upload_id => qr/^\d+/,
+						width 	=> qr/^\d+/,
+						height 	=> qr/^\d+/,
 					},
 				} ,
                 label => "reality checking a database row");
 
 	my $row_cnt = $DBH->selectrow_array("SELECT count(*) FROM uploads ");
-	is($row_cnt,6, 'number of rows in database');
+	ok($row_cnt == 6, 'number of rows in database');
 
 	 $q->param('100x100_gif_id',1);
 	 $q->param('img_1_thumb_1_id',2);
@@ -166,13 +167,12 @@ SKIP: {
 
 	 ok(eq_set(\@deleted_field_ids,['100x100_gif_id','img_1_thumb_1_id','img_1_thumb_2_id']), 'delete_checked_uploads returned field ids');
 
-
 	 @files = <t/uploads/*>;	
 
-	is((scalar @files),3, 'expected number of files removed');
+	ok(scalar @files == 3, 'expected number of files removed');
 
 	$row_cnt = $DBH->selectrow_array("SELECT count(*) FROM uploads ");
-	is($row_cnt,3, 'number of rows removed');
+	ok($row_cnt == 3, 'number of rows removed');
 
 	my $qt = ($drv eq 'mysql') ? '`' : '"'; # mysql has a funny way of quoting
 	ok($DBH->do(qq!INSERT INTO cgi_uploader_test (item_id,${qt}100x100_gif_id$qt,img_1_thumb_1_id) VALUES (1,6,5)!), 'test data insert');
@@ -188,19 +188,20 @@ SKIP: {
                 img_1_thumb_1_width 
                 img_1_thumb_1_url 
                 img_1_thumb_1_id
+                img_1_thumb_1_extension
+                img_1_thumb_1_mime_type
+                img_1_thumb_1_thumbnail_of_id
 
 				100x100_gif_height 
                 100x100_gif_width 
                 100x100_gif_url 
                 100x100_gif_id
+                100x100_gif_extension
+                100x100_gif_mime_type
+                100x100_gif_thumbnail_of_id
 			/],
 			[keys %$tmpl_vars_ref],
 		), 'fk_meta keys returned') || diag Dumper($tmpl_vars_ref);
-
-    #  my $all = $DBH->selectall_arrayref("SELECT * from uploads",{ Slice => {}});
-    #  use Data::Dumper;
-    #  warn Dumper ($all);
-
 
 };
 
