@@ -5,6 +5,7 @@ create_uploader_table.Pg.sql
 create_uploader_table.mysql.sql
 lib/CGI/Uploader.pm
 lib/CGI/Uploader/Cookbook.pod
+lib/CGI/Uploader/Transform/ImageMagick.pm
 t/200x200.gif
 t/20x16.png
 t/basic.t

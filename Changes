@@ -1,5 +1,9 @@
 Revision history for Perl extension CGI::Uploader.
 
+0.80_02 08/19/04 
+    - Added missing ImageMagick.pm (Barbie)
+    - Made t/up_table_map.t more portable (Barbie)
+
 0.80_01
     [RELEASE NOTES]
     I changed the API again. The code has been refactored to remove all

@@ -74,13 +74,22 @@ my $drv = $DBH->{Driver}->{Name};
 
 ok(open(IN, "<create_uploader_table.".$drv.".sql"), 'opening SQL create file');
 my $sql = join "\n", (<IN>);
+
+# We alter the table to test our mapping
+$sql =~ s/upload_id /upload_id_b /g;
+$sql =~ s/mime_type/mime_type_b/;
+$sql =~ s/extension/extension_b/;
+$sql =~ s/width/width_b/;
+$sql =~ s/height/height_b/;
+$sql =~ s/gen_from_id/gen_from_id_b/;
+
+
 my $created_up_table = $DBH->do($sql);
 ok($created_up_table, 'creating uploads table');
 
 ok(open(IN, "<t/create_test_table.sql"), 'opening SQL create test table file');
 $sql = join "\n", (<IN>);
 
-# Fix mysql non-standard quoting
 $sql =~ s/"/`/gs if ($drv eq 'mysql');
 
 my $created_test_table = $DBH->do($sql);
@@ -89,13 +98,6 @@ ok($created_test_table, 'creating test table');
 SKIP: {
 	 skip "Couldn't create database table", 20 unless $created_up_table;
 
-     # We alter the table to test our mapping
-     $DBH->do("ALTER TABLE uploads RENAME upload_id TO upload_id_b");
-     $DBH->do("ALTER TABLE uploads RENAME mime_type TO mime_type_b");
-     $DBH->do("ALTER TABLE uploads RENAME extension TO extension_b");
-     $DBH->do("ALTER TABLE uploads RENAME width TO width_b");
-     $DBH->do("ALTER TABLE uploads RENAME height TO height_b");
-     $DBH->do("ALTER TABLE uploads RENAME gen_from_id TO gen_from_id_b");
      $DBH->do("ALTER TABLE uploads ADD COLUMN custom char(64)");
 
 	 my %imgs = (
