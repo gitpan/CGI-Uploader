@@ -1,4 +1,3 @@
-# arch-tag: ec5da5aa-0205-4381-9d76-c29b2cd733be
 package FriendsPhotos;
 use base 'CGI::Application';
 use strict;
@@ -66,7 +65,7 @@ sub add_process {
 	}
 	else {
 		my $new_q = CGI->new({
-				msg => 'Friend Added Successfully. ',
+				success => 1,
 				rm  => 'edit_form',
 				friend_id => $friend->{friend_id}
 			}
@@ -141,7 +140,7 @@ sub edit_process {
 	}
 	else {
 		my $new_q = CGI->new({
-				msg => 'Friend Updated  Successfully. ',
+				success => 1,
 				rm  => 'edit_form',
 				friend_id => $friend->{friend_id}
 			}

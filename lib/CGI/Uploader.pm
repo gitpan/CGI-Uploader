@@ -12,7 +12,7 @@ use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '1.00';
+$VERSION = '1.1_1';
 
 =head1 NAME
 
@@ -183,7 +183,8 @@ This is not required. It simply allows you to use custom column names.
   extension       => 'extension',
   width           => 'width',
   height          => 'height',   
-  gen_from_id => 'gen_from_id',
+  gen_from_id     => 'gen_from_id',
+  file_name       => 'file_name',   
 
 You may also define additional column names with a value of 'undef'. This feature
 is only useful if you override the C<extract_meta()> method or pass in
@@ -250,6 +251,8 @@ sub new {
 
 	});
 	$in{db_driver} = $in{dbh}->{Driver}->{Name};
+    # Support PostgreSQL via ODBC
+    $in{db_driver} = 'Pg' if $in{dbh}->get_info(17) eq 'PostgreSQL';
 	unless (($in{db_driver} eq 'mysql') or ($in{db_driver} eq 'Pg')) {
 		die "only mysql and Pg drivers are supported at this time. ";
 	}
@@ -389,6 +392,8 @@ sub store_uploads {
 	# Now add and delete as needed
 	my $entity = { %$form_data, %entity_all_extra };
 	map { delete $entity->{$_} } keys %{ $self->{spec} };
+    # For good measure.
+    delete $entity->{''};
 
 	return $entity;
 }
@@ -662,10 +667,6 @@ sub store_upload {
         $id_to_update,
     ) = ($p{file_field},$p{src_file},$p{uploaded_mt},$p{file_name},$p{shared_meta},$p{id_to_update});
 
-    my $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
-
-    # XXX needs refactoring
-
     # Transform file if needed
     if (my $meth = $self->{spec}{$file_field}{transform_method}) {
         $tmp_filename = $meth->(
@@ -675,7 +676,7 @@ sub store_upload {
         );
     }
 
-    $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
+    my $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
 
     $shared_meta ||= {};
     my $all_meta = { %$meta, %$shared_meta };   
@@ -687,7 +688,7 @@ sub store_upload {
         $self->delete_gen_files($id);
     }
 
-    # insert or update will be performed as approriate. 
+    # insert or update will be performed as appropriate. 
     $id = $self->store_meta(
         $file_field, 
         $all_meta,
@@ -717,7 +718,7 @@ sub store_upload {
     );
 
 This method is responsible for creating and storing 
-any needed thumnbnails.
+any needed thumbnails.
 
 Input:
  - file_field: file field name
@@ -834,9 +835,10 @@ sub delete_gen_files {
 This method extracts and returns the meta data about a file and returns it.
 
 Input:
-    - Path to file to extract meta data from
-    - the name of the file (as sent through the file upload file)
-    - The mime-type of the file, as supplied by the browser
+
+ - Path to file to extract meta data from
+ - the name of the file (as sent through the file upload file)
+ - The mime-type of the file, as supplied by the browser
 
 Returns: a hash reference of meta data, following this example:
 
@@ -844,6 +846,7 @@ Returns: a hash reference of meta data, following this example:
          mime_type => 'image/gif',
          extension => '.gif',
          bytes     => 60234,
+         file_name => 'happy.txt',
  
          # only for images
          width     => 50,
@@ -911,6 +914,7 @@ sub extract_meta {
     my ($width,$height) = imgsize($tmp_filename);
 
     return { 
+        file_name => $file_name,
         mime_type => $mt, 
         extension => $ext,
         bytes     => (stat ($tmp_filename))[7],
@@ -930,10 +934,13 @@ sub extract_meta {
 This function is used to store the meta data of a file upload.
 
 Input: 
+
  - file field name
- - A hashref of key/value pairs to be store. Only the key names defined by
-the C<up_table_map> in C<new()> will be used. Other values in the hash will be
-ignored.
+
+ - A hashref of key/value pairs to be store. Only the key names defined by the
+   C<up_table_map> in C<new()> will be used. Other values in the hash will be
+   ignored.
+
  - Optionally, an upload ID can be passed, causing an 'Update' to happen instead of an 'Insert' 
 
 Output:
@@ -1022,7 +1029,7 @@ sub delete_meta {
 		meta   => $meta_from_db,
 		prefix => 'my_field',
 		prevent_browser_caching => 0,
-		fields => [qw/id url width height],
+		fields => [qw/id url width height/],
 	);
 
 Prepares meta data from the database for display. 
@@ -1201,7 +1208,6 @@ sub build_loc {
         $loc = "$md5_path/$id$ext";
     }
 }
-
 =head2 upload_field_names()
 
  # As a class method
@@ -1287,7 +1293,7 @@ __END__
 =head1 Contributing
 
 Patches, questions and feedback are welcome. I maintain CGI::Uploader using
-darcs, a CVS alterantive ( http://www.darcs.net/ ). My darcs archive is here:
+darcs, a CVS alternative ( http://www.darcs.net/ ). My darcs archive is here:
 http://mark.stosberg.com/darcs_hive/uploader/
 
 =head1 Author
