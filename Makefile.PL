@@ -119,6 +119,7 @@ WriteMakefile(
 		'File::Copy'		  => 0,
 		'SQL::Abstract'	      => 0,
 		'Image::Magick'		  => 0,
+        'Test::DatabaseRow'   => 0,
 	}, 
     ($] >= 5.005 ?    ## Add these new keywords supported since 5.005
       (

@@ -8,7 +8,7 @@ use Params::Validate qw/:all/;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '0.40_01';
+$VERSION = '0.50_01';
 
 =pod
 
@@ -64,14 +64,15 @@ So we have a text field for a 'friend_name' and a file upload field named
 
 To continue with the example above, we'll define two tables, one 
 will store file upload meta data. This can be used to store the information
-about file uploads related to any number of tables. However, only one other table 
-is required. For our example, we'll create an table to hold names and photos of 
-friends:
+about file uploads related to any number of tables. However, only one other 
+table is required. For our example, we'll create an table to hold names and 
+photos of friends:
 
 	-- Note the Postgres specific syntax here
     CREATE SEQUENCE upload_id_seq;
 	CREATE TABLE uploads (
-		upload_id	int primary key not null default nextval('upload_id_seq'),
+		upload_id   int primary key not null 
+		                default nextval('upload_id_seq'),
 		mime_type   character varying(64),
 		extension   character varying(8), -- file extension
 		width       integer,                 
@@ -79,22 +80,23 @@ friends:
 	)
 
  CREATE TABLE address_book (
-    friend_id          int primary key,
-    full_name               varchar(64),
+    friend_id       int primary key,
+    full_name       varchar(64),
 
     -- these two reference uploads('upload_id'),
     photo_id            int,  
     photo_thumbnail_id  int 
  );
     
-I<MySQL is also supported. Check in the distribution for a sample SQL 'Create'
-scripts for both database.>.
+I<MySQL is also supported. Check in the distribution for sample SQL 'Create'
+scripts for both MySQL and Postgresql databases.>.
 
 =head2 EXAMPLE FORM VALIDATION
 
-Finally, this module is designed to work with L<Data::FormValidator|Data::FormValidator>, which can 
-provide sophisticated validation of file uploads. The Data::FormValidator profile to validate
-the above form might look like this:
+Finally, this module is designed to work with 
+L<Data::FormValidator|Data::FormValidator>, which can provide sophisticated 
+validation of file uploads. The Data::FormValidator profile to validate the 
+above form might look like this:
 
  {
     validator_packages => [qw(Data::FormValidator::Constraints::Upload)],
@@ -158,8 +160,8 @@ these images, with one difference. In the database, '_id' needs to be added to
 the end of the name. So a form field named 'photo' is referenced a database
 column of 'photo_id'.
 
- # The same object can be used when inserting, updating, deleting and selecting
- # the uploads.
+ # The same object can be used when inserting, updating, deleting 
+ # and selecting the uploads.
 
  my $u = CGI::Uploader->new(
  	spec => {
@@ -195,12 +197,8 @@ column of 'photo_id'.
 
 
 That's a basic example. Read on for more details about what's possible,
-including convenient functions to also help with updating, deleting, and linking
-to the upload.
-
-=cut
-
-=pod
+including convenient functions to also help with updating, deleting, and 
+linking to the upload.
 
 =head1 METHODS
 
@@ -231,28 +229,26 @@ to the upload.
 
 =over 4
 
-=item spec
+=item spec [required]
 
-The spec described above. Required. The keys correspond to form field names 
-for upload fields. The values are array references. The simplest case is for the array
-to be empty, which means no thumbnails will be created. For non-image types,  
-thumbnails don't make sense away. Each element in the array is a hash reference
-with the following keys: 'name', 'w', 'h'. These correspond to the name, max width, and max height
-of the thumbnail.
-
-The name will correspond to a database field that that references that the thumbnails 
-meta data. See the EXAMPLE SETUP above for an example.
+The spec described above. The keys correspond to form field names for upload 
+fields. The values are array references. The simplest case is for the array to 
+be empty, which means no thumbnails will be created. For non-image types,  
+thumbnails don't make sense anyway. Each element in the array is a hash 
+reference with the following keys: 'name', 'w', 'h'. These correspond to the 
+name, max width, and max height of the thumbnail.
 
 
-=item updir_url
+=item updir_url [required]
 
-URL to upload storage directory. Required. Should not include a trailing slash.
+URL to upload storage directory. Should not include a trailing slash.
 
-=item updir_path
+=item updir_path [required]
 
-File system path to upload storage directory. Required. Should not include a trailing slash.
+File system path to upload storage directory. Should not include a trailing 
+slash.
 
-=item dbh
+=item dbh [required]
 
 DBI database handle. Required.
 
@@ -263,9 +259,9 @@ Defaults to CGI->new() if omitted.
 
 =item up_table
 
-Name of SQL table where uploads are stored. See example sytax above 
-or one of the creation scripts included in the distribution. Defaults 
-to "uploads" if omitted.
+Name of the SQL table where uploads are stored. See example syntax above or one
+of the creation scripts included in the distribution. Defaults to "uploads" if 
+omitted.
 
 =item up_seq
 
@@ -277,7 +273,6 @@ Defaults to C<upload_id_seq> if omitted.
 =back 
 
 =cut
-
 
 sub new {
 	my $proto = shift;
@@ -306,7 +301,6 @@ sub new {
 		}
 	}
 
-
 	my $self  = \%in;
 	bless ($self, $class);
 	return $self;
@@ -315,13 +309,11 @@ sub new {
 
 =pod 
 
-
 =head2 store_uploads($results)
 
- my $entity = $u->store_uploads($results);
+  my $entity = $u->store_uploads($results);
 
-stores uploaded files based on the definition given in
-C<spec>. 
+Stores uploaded files based on the definition given in C<spec>. 
 
 Specifically, it does the following:
 
@@ -401,7 +393,7 @@ sub store_uploads {
 
 =head2 delete_checked_uploads()
 
-	my @deleted_field_ids = $u->delete_checked_uploads;
+ my @deleted_field_ids = $u->delete_checked_uploads;
 
 This method deletes all uploads and any associated thumbnails
 based on form input. File system files as well as database rows are removed.
@@ -412,7 +404,7 @@ value.
 
 A list of the field names is returned, prepended with '_id', such as:
 
-	img_1_id
+ img_1_id
 
 The expectation is that you have colums with this name defined in another table, 
 and by deleting these field names from the $valid hash, they will be set to NULL 
@@ -445,11 +437,11 @@ sub delete_checked_uploads {
 
 =head2 delete_upload()
 
-	# Provide the file upload field name
-	my $field_name = $u->delete_upload(name => 'img_1');
+ # Provide the file upload field name
+ my $field_name = $u->delete_upload(name => 'img_1');
 
-	# Or the upload_id 
-	my $field_name = $u->delete_upload(upload_id => 14 );
+ # Or the upload_id 
+ my $field_name = $u->delete_upload(upload_id => 14 );
 
 This method is used to delete a row in the uploads table and file system file associated
 with a single upload.  Usually it's more convenient to use C<delete_checked_uploads>
@@ -460,13 +452,13 @@ of the file upload field used:
 
 	my $field_name = $u->delete_upload(name => 'img_1');
 
-Here, it expects tofind a query field name
+Here, it expects to find a query field name
 with the same prefix and '_id' appended (ie: I<img_1_id>).
 The id field should contain the upload_id to delete.
 
 As an alternate interface, you can provide the upload_id directly:
 
-	my $field_name = $u->delete_upload(upload_id => 14 );
+ my $field_name = $u->delete_upload(upload_id => 14 );
 
 The method returns the field name deleted, with "_id" included. 
 
@@ -499,16 +491,16 @@ sub delete_upload {
 
 =head2 meta_hashref()
 
-	my $href = $u->meta_hashref($table,\%where,@prefixes);
+ my $href = $u->meta_hashref($table,\%where,@prefixes);
 
 Returns a hash reference of information about the file, useful for 
 passing to a templating system. Here's an example of what the contents 
 of C<$href> might look like:
 
-	{
-		file_1_id     => 523,
-		file_1_url    => 'http://localhost/images/uploads/523.pdf',
-	}
+ {
+     file_1_id     => 523,
+     file_1_url    => 'http://localhost/images/uploads/523.pdf',
+ }
 
 If the files happen to be images and have their width and height
 defined in the database row, template variables will be made
@@ -516,18 +508,20 @@ for these as well.
 
 Here's an example syntax of calling the function:
 
-	my $href = $u->meta_hashref('news',{ item_id => 23 },qw/file_1/);
+ my $href = $u->meta_hashref('news',{ item_id => 23 },qw/file_1/);
 
 This is going to fetch the file information from the upload table for using the row 
 where news.item_id = 23 AND news.file_1_id = uploads.upload_id.
-The result might look like this:
 
+This is going to fetch the file information from the upload table for using the row 
+where news.item_id = 23 AND news.file_1_id = uploads.upload_id.
 
 The C<%where> hash mentioned here is a L<SQL::Abstract|SQL::Abstract> where clause. The
 complete SQL that used to fetch the data will be built like this:
 
  SELECT upload_id as id,width,height,extension 
-	FROM uploads, $table where (upload_id = ${prefix}_id and (%where_clause_expanded here));
+    FROM uploads, $table 
+    WHERE (upload_id = ${prefix}_id AND (%where_clause_expanded here));
 
 =cut 
 	
@@ -708,9 +702,7 @@ sub store_meta {
 	return wantarray ? @ids : $ids[0];
 }
 
-=pod
-
-=head2 names()
+=head2 names
 
 Returns an array of all the upload names, including any thumbnails.
 
@@ -739,6 +731,15 @@ Mark Stosberg <mark@summersault.com>
 A special thanks to David Manura for his detailed and persistent feedback in 
 the early days, when the documentation was wild and rough.
 
+Barbie, for the first patch. 
+
+=head1 PLANS
+
+The following are planned improvements before a 1.0 release:
+
+ - remove Data::FormValidator dependency (Mark Stosberg)
+ - add support for DBD::SQLite, DBD::CSV, DBD::ODBC (Barbie)
+ - remove need for live database to run 'make test' with Test::MockObject. (Barbie)
 
 =head1 LICENSE 
 
