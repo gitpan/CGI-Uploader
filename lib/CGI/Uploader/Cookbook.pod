@@ -298,7 +298,10 @@ for display:
 
 =head2 Processing an Update Form
 
-To process the update form, first delete any uploads that the user has
+Processing an update form is the most complicated part of application. From
+this form it's possible to add, update and delete uploads  
+
+To process the update form, we'll first delete any uploads that the user has
 requested to remove. Next, add and update any other uploads as need. 
 
  my $friend = $q->Vars; 
@@ -313,15 +316,6 @@ Although the call to C<store_uploads()> looks the same as it did for
 adding a record, it works a little different now. Notice we passed 
 a photo_id through the form above. Because this is present, that record 
 will be updated instead of creating a new one.
-
-=head2 Deleting An Upload
-
-If you need another way to delete an upload besides using C<delete_checked_uploads> above,
-you can use the following:
-
- my $field_name = $u->delete_upload('photo', $photo_id );
-
-This does not current remove the the related thumbnails as well. 
 
 =head2 Recipe Idea: Handling anonymous image uploads
 

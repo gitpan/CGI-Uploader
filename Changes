@@ -1,5 +1,8 @@
 Revision history for Perl extension CGI::Uploader.
 
+0.75_02
+	- Refactored delete_upload() to be simpler and more intuitive.
+
 0.75_01
 	- Added support for specifying fields to process via regular expressions. 
 	- Improved Cookbook documentation. 

@@ -12,7 +12,7 @@ use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '0.75_01';
+$VERSION = '0.75_02';
 
 =head1 NAME
 
@@ -414,20 +414,33 @@ sub delete_checked_uploads {
 	my $imgs = $self->{spec};
 
     my $q = $self->{query};
+	my $map = $self->{up_table_map};
 
 	my @to_delete;
 
- 	for my $i (keys %$imgs) {
-		if ($q->param($i.'_delete') ) {
-			push @to_delete, $self->delete_upload($i);
+ 	for my $file_field (keys %$imgs) {
+		if ($q->param($file_field.'_delete') ) {
+			my $upload_id = $q->param($file_field.'_id') || 
+				die "$file_field was selected to delete, 
+					but ID was missing in '${file_field}_id' field";
+
+			$self->delete_upload($upload_id);
 			
-			# For each thumbnail:
-			for my $thumb (@{ $imgs->{$i}->{thumbs} }) {
-				push @to_delete, $self->delete_upload($thumb->{name});
+			# Delete child thumbnails as well. 
+			my $thumb_ids = $self->{dbh}->selectcol_arrayref(
+				"SELECT $map->{upload_id}
+					FROM $self->{up_table}
+					WHERE $map->{thumbnail_of_id} = ?",{},$upload_id) || [];
+
+			for my $thumb_id (@$thumb_ids) {
+				$self->delete_upload($thumb_id);
 			}
+
+			push @to_delete, map {$_.'_id'} $self->spec_names($file_field) ; 
 		}
 
 	}
+
 	return @to_delete;
 }
 
@@ -870,44 +883,23 @@ sub create_store_thumbs {
 
 =head2 delete_upload()
 
- # Provide the file upload field name
- my $field_name = $u->delete_upload('img_1');
+  $u->delete_upload($upload_id);
 
- # And optionally the ID
- my $field_name = $u->delete_upload('img_1', 14 );
+This method is used to delete the meta data and file associated with an upload.
+Usually it's more convenient to use C<delete_checked_uploads> than to call this
+method directly.
 
-This method is used to delete a row in the uploads table and file system file associated
-with a single upload.  Usually it's more convenient to use C<delete_checked_uploads>
-than to call this method directly.
-
-If the ID is not provided, the value of a form field named
-C<$file_field.'_id'> will be used. C<$file_name> is the field
-name or thumbnail name defined in the C<spec>.
-
-The method returns the field name deleted, with "_id" included. 
-
-Notice that this method does not delete thumbnails for this upload. 
+This method does not delete thumbnails for this upload. 
 
 =cut
 
 sub delete_upload {
 	my $self = shift;
-    my ($file_field,$id) = @_;
-
-    my $q = $self->{query};
-
-	unless ($id) {
-		# before we delete anything with it, verify it's an integer.
-        $q->param($file_field.'_id') =~ /(^\d+$)/ 
-			|| die "no id for upload named $file_field";
-		$id = $1;
-	}
+    my ($id) = @_;
 
     $self->delete_file($id);
     $self->delete_meta($id);
 
-	# return field name to delete
-	return $file_field.'_id';
 }
 
 =head2 delete_thumbs()
@@ -1367,17 +1359,28 @@ sub upload_field_names {
 
 =head2 spec_names()
 
-Returns an array of all the upload names defined in the spec, including any
-thumbnail names.
+ $spec_names = $u->spec_names('file_field'):
+
+With no arguments, returns an array of all the upload names defined in the
+spec, including any thumbnail names.
+
+With one argument, a file field from the spec, can also be provided. It then returns
+that name as well as the names of any related thumbnails. 
+
+
 
 =cut
 
 sub spec_names {
  	my $self = shift;
- 	my $imgs = $self->{spec};
+	my $file_field = shift;
+
+ 	my $fields = $self->{spec};
+
+	my @fields_to_use =  (defined $file_field) ? $file_field  : keys %$fields;
  
- 	return keys %$imgs,  # primary images
- 		map { map { $_->{name}   } @{ $imgs->{$_}{thumbs} } } keys %$imgs;  # thumbs
+ 	return @fields_to_use,  # primary images
+ 		map { map { $_->{name}   } @{ $fields->{$_}{thumbs} } } @fields_to_use ;  # thumbs
 }
 
 1;
