@@ -130,7 +130,7 @@ SKIP: {
  	 };
 	 is($@,'', 'calling store_uploads');
 
-	 my @pres = $u->names;
+	 my @pres = $u->spec_names;
 	 ok(eq_set([grep {m/_id$/} keys %$entity ],[map { $_.'_id'} @pres]),
 	 	'store_uploads entity additions work');
 

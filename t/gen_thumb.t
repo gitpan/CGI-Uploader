@@ -15,6 +15,19 @@ BEGIN {
     use_ok('CGI');
 };
 
+
+ my ($class_meth_tmp_filename)  = CGI::Uploader->gen_thumb(
+         filename => 't/20x16.png',
+         w => 5,
+	 );
+
+ my ($w,$h) = imgsize($class_meth_tmp_filename); 
+ is($w,5,'as class method - correct height only width is supplied');
+ is($h,4,'as class method - correct height only width is supplied');
+
+
+####
+
     use vars qw($dsn $user $password);
     my $file ='t/cgi-uploader.config';
     my $return;

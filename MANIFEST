@@ -4,6 +4,7 @@ Makefile.PL
 create_uploader_table.Pg.sql
 create_uploader_table.mysql.sql
 lib/CGI/Uploader.pm
+lib/CGI/Uploader/Cookbook.pod
 t/200x200.gif
 t/20x16.png
 t/basic.t
@@ -18,3 +19,4 @@ t/up_table_map.t
 t/upload_post_reversed.txt
 t/upload_post_text.txt
 t/uploads/.empty
+META.yml                                 Module meta-data (added by MakeMaker)

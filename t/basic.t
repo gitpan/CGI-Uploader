@@ -91,13 +91,17 @@ SKIP: {
 	 skip "Couldn't create database table", 20 unless $created_up_table;
 
 	 my %imgs = (
-		'100x100_gif' => [
+		qr/100/ => [
 			{ name => 'img_1_thumb_1', w => 50, h => 60 },
 			{ name => 'img_1_thumb_2', w => 35, h => 25 },
 		],
 		'300x300_gif' => [
 			{ name => 'img_2_thumb_1', w => 210, h => 200 },
-			{ name => 'img_2_thumb_2', w => 150, h => 140 },
+			{ 
+				# Test a code ref name. 
+				name => sub { 'img_2_thumb_2' },
+				w => 150, h => 140 
+			},
 		],
         '20x16_png' => { downsize => { w => 10 } },
 	 );
@@ -118,8 +122,7 @@ SKIP: {
 	 is($@,'', 'calling store_uploads');
 
 use Data::Dumper;
-    my @pres = grep {!m/png/} $u->names;
-	 ok(eq_set([grep {m/_id$/} keys %$entity ],[map { $_.'_id'} @pres]),
+    my @pres = grep {!m/png/} $u->spec_names; ok(eq_set([grep {m/_id$/} keys %$entity ],[map { $_.'_id'} @pres]),
 	 	'store_uploads entity additions work') || diag Dumper ($entity);
 
 	ok(not(grep {m/^(300x300_gif|100x100_gif)$/} keys %$entity),

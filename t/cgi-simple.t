@@ -99,15 +99,16 @@ SKIP: {
 	 skip "Couldn't create database table", 20 unless $created_up_table;
 
 	 my %imgs = (
-		'100x100_gif' => [
+		 qr/100/  => [
 			{ name => 'img_1_thumb_1', w => 50, h => 50 },
 			{ name => 'img_1_thumb_2', w => 50, h => 50 },
 		],
-		'300x300_gif' => [
+		qr/300/ => [
 			{ name => 'img_2_thumb_1', w => 50, h => 50 },
 			{ name => 'img_2_thumb_2', w => 50, h => 50 },
 		],
 	 );
+
 
 	 my $u = 	CGI::Uploader->new(
 		updir_path=>'t/uploads',
@@ -118,6 +119,19 @@ SKIP: {
 	 );
 	 ok($u, 'Uploader object creation');
 
+	 my @pres = $u->spec_names;
+	 ok(eq_set([qw/
+			 100x100_gif 
+			 300x300_gif
+             img_2_thumb_1
+             img_2_thumb_2
+             img_1_thumb_1
+             img_1_thumb_2
+
+			 
+			 /],[@pres] ),
+		"spec expands correctly when using REs");
+
      my $form_data = $q->Vars;
 
  	 my ($entity);
@@ -127,7 +141,6 @@ SKIP: {
  	 };
 	 is($@,'', 'calling store_uploads');
 
-	 my @pres = $u->names;
 	 ok(eq_set([grep {m/_id$/} keys %$entity ],[map { $_.'_id'} @pres]),
 	 	'store_uploads entity additions work');
 
@@ -188,17 +201,11 @@ SKIP: {
                 img_1_thumb_1_width 
                 img_1_thumb_1_url 
                 img_1_thumb_1_id
-                img_1_thumb_1_extension
-                img_1_thumb_1_mime_type
-                img_1_thumb_1_thumbnail_of_id
 
 				100x100_gif_height 
                 100x100_gif_width 
                 100x100_gif_url 
                 100x100_gif_id
-                100x100_gif_extension
-                100x100_gif_mime_type
-                100x100_gif_thumbnail_of_id
 			/],
 			[keys %$tmpl_vars_ref],
 		), 'fk_meta keys returned') || diag Dumper($tmpl_vars_ref);

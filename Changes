@@ -1,5 +1,9 @@
 Revision history for Perl extension CGI::Uploader.
 
+0.75_01
+	- Added support for specifying fields to process via regular expressions. 
+	- Improved Cookbook documentation. 
+
 0.70_02 Wed Apr 21, 2004
     - Removed custom_meta(). This problem space is now addressed by 
       allowing meta data to be passed to store_uploads(). Also, you could
