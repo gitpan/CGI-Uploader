@@ -29,8 +29,8 @@ my $app = FriendsPhotos->new(
 				{ name => 'photo_thumbnail', w => 100, h => 100, }
 				],
 			},
-			updir_url  => $script_url,
-			updir_path => $script_dir,
+			updir_url  => "$script_url/uploads",
+			updir_path => "$script_dir/uploads",
 			dbh        => $dbh, 
 		},
 	}

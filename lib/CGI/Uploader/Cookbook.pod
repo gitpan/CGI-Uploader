@@ -326,13 +326,37 @@ adding a record, it works a little different now. Notice we passed
 a photo_id through the form above. Because this is present, that record 
 will be updated instead of creating a new one.
 
-=head2 Recipe Idea: Handling anonymous image uploads
+=head2 Recipe Idea: Put an existing directory of photos online 
 
-The recipe above required having a column name in another table for each upload
-that was stored. It's also possible with CGI::Uploader to have many "anynonmous" uploads
-associated with another entity in the database. 
+You have an existing directory full of JPEGS that you want to put online
+as a photo gallery, with medium and small versions created of all the images.
+C<CGI::Uploader> is versitale enough to help in thi situation as well.
 
-[ And the documentation for how to that still needs to be written. :) ]  
+Your spec might look like this:
+
+ large_jpeg  => [
+    { name => 'medium', w => 500, },
+    { name => 'small',  w => 250,  
+  ],
+
+From there, read in all the file names and store all the files, with the
+smaller versions being created automatically for you along the way.
+
+ for my $jpeg (<*.jpg>) {
+   my %entity_upload_extra = $self->store_upload(
+ 	file_field    => 'large_jpeg',
+ 	src_file      => $jpeg,
+ 	uploaded_mt   => 'image/jpeg',
+ 	file_name     => $jpeg,
+    );
+ }
+
+To display all the smallest thumbnails on a single page....
+XXX Finish me. (Hmmm, with the foreign keys, we've lost
+a way to tell for sure which thumnbail is which. ) 
+
+
+
 
 
 =head2 Recipe Idea: Further automation
@@ -360,6 +384,14 @@ reference. It will receive the name of the parent file field as it's first argum
 					
 For a matching field named C<photo_2>, the resulting thumbnail would be
 named C<photo_2_thumb>.
+
+=head2 Recipe Idea: Handling anonymous image uploads
+
+The recipe above required having a column name in another table for each upload
+that was stored. It's also possible with CGI::Uploader to have many "anynonmous" uploads
+associated with another entity in the database. 
+
+[ And the documentation for how to that still needs to be written. :) ]  
 
 
 =head1 See Also
