@@ -121,13 +121,14 @@ WriteMakefile(
         'File::Path'          => 0,
 		'MIME::Type'		  => 0, 
 		'MIME::Types'		  => 0,
-		'Params::Validate'    => 0,
+		'Params::Validate'    => 0.77,
 		'SQL::Abstract'	      => 0,
         'CGI'                 => 0,
         'DBI'                 => 0,
-        'File::Temp'          => 0,
+        'File::Temp'          => 0.14,
         'Test::DatabaseRow'   => 0,
         'Test::Differences'   => 0,
+        'HTML::BrowserDetect'   => 0,
 
         # Should be recommeded, but not required. 
         # Image::Magick also works as an alternative. 

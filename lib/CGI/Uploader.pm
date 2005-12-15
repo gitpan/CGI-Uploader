@@ -12,7 +12,7 @@ use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '1.1_1';
+$VERSION = '1.1';
 
 =head1 NAME
 
@@ -253,8 +253,8 @@ sub new {
 	$in{db_driver} = $in{dbh}->{Driver}->{Name};
     # Support PostgreSQL via ODBC
     $in{db_driver} = 'Pg' if $in{dbh}->get_info(17) eq 'PostgreSQL';
-	unless (($in{db_driver} eq 'mysql') or ($in{db_driver} eq 'Pg')) {
-		die "only mysql and Pg drivers are supported at this time. ";
+	unless (($in{db_driver} eq 'mysql') or ($in{db_driver} eq 'Pg') or ($in{db_driver} eq 'SQLite')) {
+		die "only mysql, Pg and SQLite drivers are supported at this time. You are trying to use $in{db_driver}.";
 	}
 
     unless ($in{query}) {
@@ -614,7 +614,12 @@ sub upload {
    return undef unless ($fh && $filename);
 
    my ($tmp_fh, $tmp_filename) = tempfile('CGIuploaderXXXXX', UNLINK => 1);
-   binmode($tmp_fh);
+
+   #   Determine whether binary mode is required in the handling of uploaded 
+   #   files - 
+   #   Binary mode is deemed to be required when we (the server) are running one one 
+   #   of these platforms: for Windows, OS/2 and VMS 
+   binmode($tmp_fh) if ($^O =~ /OS2|VMS|Win|DOS|Cygwin/i);
 
    require File::Copy;
    import  File::Copy;
@@ -655,7 +660,11 @@ sub store_upload {
             uploaded_mt   => { type => SCALAR },
             file_name     => { type => SCALAR | GLOBREF },
             shared_meta   => { type => HASHREF | UNDEF,    default => {} },
-            id_to_update  => { regex => qr/^\d*$/, optional => 1 },
+            # This line is causing a warning to be printed to the Apache error
+            # log by Params::Validate if id_to_update is not set; looks like
+            # an error since optional is set - WLM 2005-07-07
+            #id_to_update  => { regex => qr/^\d*$/, optional => 1 },
+            id_to_update  => { type => SCALAR | UNDEF, optional => 1 },
         });
 
     my (
@@ -679,7 +688,7 @@ sub store_upload {
     my $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
 
     $shared_meta ||= {};
-    my $all_meta = { %$meta, %$shared_meta };   
+    my $all_meta = { %$meta, %$shared_meta };
 
     my $id;
     # If it's an update
@@ -694,15 +703,14 @@ sub store_upload {
         $all_meta,
         $id );
 
-
     $self->store_file($file_field,$id,$meta->{extension},$tmp_filename);
 
     my %ids = $self->create_store_gen_files(
-		file_field      => $file_field,
-		meta	        => $all_meta,
-		src_file        => $tmp_filename,
-		gen_from_id => $id,
-    );
+      file_field      => $file_field,
+      meta	        => $all_meta,
+      src_file        => $tmp_filename,
+      gen_from_id => $id,
+    ) || ();
 
     return (%ids, $file_field.'_id' => $id);
 
@@ -863,6 +871,16 @@ sub extract_meta {
     my $uploaded_mt = shift || '';
 
     
+    #   Determine and set the appropriate file system parsing routines for the 
+    #   uploaded path name based upon the HTTP client header information.
+    use HTTP::BrowserDetect;
+    my $client_os = $^O;
+    my $browser = HTTP::BrowserDetect->new;
+    $client_os = 'MSWin32' if $browser->windows;
+    $client_os = 'MacOS' if $browser->mac;
+    require File::Basename;
+    File::Basename::fileparse_set_fstype($client_os);
+    $file_name = File::Basename::fileparse($file_name,[]);
 
 
    require File::MMagic;	
@@ -913,7 +931,7 @@ sub extract_meta {
    # Now get the image dimensions if it's an image 
     my ($width,$height) = imgsize($tmp_filename);
 
-    return { 
+    return {
         file_name => $file_name,
         mime_type => $mt, 
         extension => $ext,
@@ -937,7 +955,7 @@ Input:
 
  - file field name
 
- - A hashref of key/value pairs to be store. Only the key names defined by the
+ - A hashref of key/value pairs to be stored. Only the key names defined by the
    C<up_table_map> in C<new()> will be used. Other values in the hash will be
    ignored.
 
@@ -998,6 +1016,9 @@ sub store_meta {
     $DBH->do($stmt,{},@bind);
     if (!$is_update && $self->{db_driver} eq 'mysql') {
         $id = $DBH->{'mysql_insertid'};
+    }
+    if (!$is_update && $self->{db_driver} eq 'SQLite') {
+      $id = $DBH->func('last_insert_rowid')
     }
 
 	return $id;
@@ -1103,6 +1124,26 @@ sub transform_meta  {
 
 }
 
+=head2 get_meta()
+
+ my $meta_href = $self->get_meta($id);
+
+Returns a hashref of data stored in the uploads database table for the requested file id.
+
+=cut
+
+sub get_meta {
+  validate_pos(@_,1,1);
+  my ($self,$id) = @_;
+
+  my $map = $self->{up_table_map};
+  return  $self->{dbh}->selectrow_hashref("
+            SELECT * FROM $self->{up_table} 
+                WHERE $map->{upload_id} = ?",{},$id);
+}
+
+
+
 =head1 File Methods
 
 =head2 store_file()
@@ -1125,11 +1166,13 @@ sub store_file {
     validate_pos(@_,1,1,1,1,1);
     my $self = shift;
     my ($file_field,$id,$ext,$tmp_file) = @_;
-	assert($ext, 'have extension');
-	assert($id,'have id');
-	assert(-f $tmp_file,'tmp file exists');
+    assert($ext, 'have extension');
+    assert($id,'have id');
+    assert(-f $tmp_file,'tmp file exists');
+    assert(-d $self->{updir_path},'updir_path is a directory');
+    assert(-w $self->{updir_path},'updir_path is writeable');
 
-    require File::Copy;	
+    require File::Copy;
     import File::Copy;
     copy($tmp_file, File::Spec->catdir($self->{updir_path},$self->build_loc($id,$ext)) )
     || die "Unexpected error occured when uploading the image: $!";
@@ -1185,7 +1228,7 @@ option to C<new()>, which affects it's behavior.
 =cut
 
 sub build_loc {
-    validate_pos(@_,1,1,1);
+    validate_pos(@_,1,1,0);
     my ($self,$id,$ext) = @_;
 
     my $scheme = $self->{file_scheme};
@@ -1208,10 +1251,11 @@ sub build_loc {
         $loc = "$md5_path/$id$ext";
     }
 }
+
 =head2 upload_field_names()
 
  # As a class method
- (@file_field_names) = CGI::Uplooader->upload_field_names($q);
+ (@file_field_names) = CGI::Uploader->upload_field_names($q);
 
  # As an object method
  (@file_field_names) = $u->upload_field_names();
