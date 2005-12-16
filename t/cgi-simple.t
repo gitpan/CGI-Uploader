@@ -1,10 +1,4 @@
-# don't edit the next line. Thanks.
-# arch-tag: 7d260dea-947d-4183-a2ed-5b32c0c46b0a 
-
-#########################
-
 use Test::More;
-use lib 'lib';
 use strict;
 
 eval { 
@@ -22,7 +16,6 @@ BEGIN { use_ok('CGI::Uploader') };
 BEGIN { use_ok('DBI') };
 BEGIN { use_ok('Test::DatabaseRow') };
 BEGIN { use_ok('Image::Size') };
-BEGIN { use_ok('Test::Differences') };
 BEGIN { use_ok('Image::Magick') };
 BEGIN { use_ok('CGI::Uploader::Transform::ImageMagick') };
 

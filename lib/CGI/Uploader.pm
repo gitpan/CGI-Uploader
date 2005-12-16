@@ -12,7 +12,7 @@ use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '1.1';
+$VERSION = '1.2';
 
 =head1 NAME
 
@@ -705,12 +705,13 @@ sub store_upload {
 
     $self->store_file($file_field,$id,$meta->{extension},$tmp_filename);
 
-    my %ids = $self->create_store_gen_files(
-      file_field      => $file_field,
-      meta	        => $all_meta,
-      src_file        => $tmp_filename,
+    my %ids = ();
+       %ids = $self->create_store_gen_files(
+      file_field  => $file_field,
+      meta        => $all_meta,
+      src_file    => $tmp_filename,
       gen_from_id => $id,
-    ) || ();
+    );
 
     return (%ids, $file_field.'_id' => $id);
 
