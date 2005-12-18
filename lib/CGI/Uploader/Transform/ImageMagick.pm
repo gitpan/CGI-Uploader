@@ -6,16 +6,27 @@ use Params::Validate (qw/:all/);
 use Carp::Assert;
 use vars (qw/@EXPORT $VERSION/);
 
-$VERSION = 1.1;
+$VERSION = 2.0;
 
 @EXPORT = (qw/&gen_thumb/);
 
 =head2 gen_thumb()
 
- ($thumb_tmp_filename)  = CGI::Uploader->gen_thumb(
-    $orig_filename, 
-    [ w => $width, h => $height ]
-    );
+  use CGI::Uploader::Transform::ImageMagick;
+
+As a class method:
+
+ ($thumb_tmp_filename)  = CGI::Uploader::Transform::ImageMagick->gen_thumb({
+    filename => $orig_filename, 
+           w => $width, 
+           h => $height 
+    });
+
+Within a CGI::Uploader C<spec>:
+
+    transform_method => gen_thumb( w => $width, h => $height ),
+
+Looking for a different syntax? See L<BACKWARDS COMPATIBILITY>
 
 This function creates a copy of given image file and resizes the copy to the
 provided width and height.
@@ -36,17 +47,52 @@ One or both  of C<w> or C<h> is required.
 
 Output:
     - filename of generated tmp file for the thumbnail 
+    - the initialized image generation object. (You generally shouldn't need this)
 
 =cut
 
-sub gen_thumb {
-    my ($self, $orig_filename, $params) = validate_pos(@_,1,1,{
-            type => ARRAYREF
-        });
-    my %p = validate(@$params,{ 
-            w => { type => SCALAR | UNDEF, regex => qr/^\d*$/, optional => 1, },
-            h => { type => SCALAR | UNDEF, regex => qr/^\d*$/, optional => 1 },
-        });
+sub gen_thumb  {
+    # If the first arg is an object, we have really work to do right now
+    my $first_arg = $_[0];
+    use Scalar::Util (qw/blessed/);
+    if ((blessed $first_arg) or (eval {$first_arg->can('gen_thumb')})) {
+        return _really_gen_thumb(@_);
+    }
+    # Otherwise, just generate a closure pass back a code ref for later use
+    else {
+        my %args = @_;
+        return sub {
+            my $self = shift;
+            my $filename = shift;
+            _really_gen_thumb($self, {
+                    filename => $filename, 
+                    %args,
+                });
+        }
+    }
+}
+
+sub _really_gen_thumb {
+    my $self = shift || die "gen_thumb needs object";
+    my (%p,$orig_filename,$params);
+    # If we have the new hashref API
+    if (ref $_[0] eq 'HASH') {
+        %p = validate(@_,{ 
+                filename => { type => SCALAR },
+                w => { type => SCALAR | UNDEF, regex => qr/^\d*$/, optional => 1, },
+                h => { type => SCALAR | UNDEF, regex => qr/^\d*$/, optional => 1 },
+            });
+        $orig_filename = $p{filename};
+    }
+    # we have the old ugly style API
+    else {
+        ($orig_filename, $params) = validate_pos(@_,1,{ type => ARRAYREF });
+        # validate handles a hash or hashref transparently
+        %p = validate(@$params,{ 
+                w => { type => SCALAR | UNDEF, regex => qr/^\d*$/, optional => 1, },
+                h => { type => SCALAR | UNDEF, regex => qr/^\d*$/, optional => 1 },
+            });
+    }
     die "must supply 'w' or 'h'" unless (defined $p{w} or defined $p{h});
 
     # Having both Graphics::Magick and Image::Magick loaded at the same time
@@ -68,39 +114,39 @@ sub gen_thumb {
     elsif ( _load_magick_module('Image::Magick') ) {
         $magick_module = 'Image::Magick';
     }
-
-    my ($thumb_tmp_fh, $thumb_tmp_filename) = tempfile('CGIuploaderXXXXX', UNLINK => 1);
-    binmode($thumb_tmp_fh);
-
-    if ($magick_module) {
-        my $img = $magick_module->new();
-        my $err;
-        eval {
-          $err = $img->Read(filename=>$orig_filename);
-          die "Error while reading $orig_filename: $err" if $err;
-
-          my ($target_w,$target_h) = _calc_target_size($img,$p{w},$p{h});
-
-          $err = $img->Resize($target_w.'x'.$target_h); 
-          die "Error while resizing $orig_filename: $err" if $err;
-          $err = $img->Write($thumb_tmp_filename);
-          die "Error while writing $orig_filename: $err" if $err;
-        };
-        if ($@) {
-            warn $@;
-            my $code;
-            # codes > 400 are fatal 
-            die $err if ((($code) = $err =~ /(\d+)/) and ($code > 400));
-        }
-    }
     else {
         die "No graphics module found for image resizing. Install Graphics::Magick or Image::Magick: $@ "
     }
 
+    my ($thumb_tmp_fh, $thumb_tmp_filename) = tempfile('CGIuploaderXXXXX', UNLINK => 1);
+    binmode($thumb_tmp_fh);
+
+    my $img = $magick_module->new();
+
+    my $err;
+    eval {
+        $err = $img->Read(filename=>$orig_filename);
+        die "Error while reading $orig_filename: $err" if $err;
+
+        my ($target_w,$target_h) = _calc_target_size($img,$p{w},$p{h});
+
+        $err = $img->Resize($target_w.'x'.$target_h); 
+        die "Error while resizing $orig_filename: $err" if $err;
+        $err = $img->Write($thumb_tmp_filename);
+        die "Error while writing $orig_filename: $err" if $err;
+    };
+    if ($@) {
+        warn $@;
+        my $code;
+        # codes > 400 are fatal 
+        die $err if ((($code) = $err =~ /(\d+)/) and ($code > 400));
+    }
+
     assert ($thumb_tmp_filename, 'thumbnail tmp file created');
-    return $thumb_tmp_filename;
+    return wantarray ? ($thumb_tmp_filename, $img ) :  $thumb_tmp_filename;
 
 }
+
 
 # Calculate the target with height
 # 
@@ -138,6 +184,24 @@ sub _load_magick_module {
     };
     return !$@;
 }
+
+=head2 BACKWARDS COMPATIBILITY
+
+These older, more awkward syntaxes are still supported: 
+
+As a class method:
+
+ ($thumb_tmp_filename)  = CGI::Uploader::Transform::ImageMagick->gen_thumb(
+    $orig_filename, 
+    [ w => $width, h => $height ]
+    );
+
+In a C<CGI::Uploader> C<spec>:
+
+'my_img_field_name' => {
+    transform_method => \&gen_thumb,                                                                    
+    params => [ w => 100, h => 100 ],                                                             
+  }                                                                                                         
 
 
 1;

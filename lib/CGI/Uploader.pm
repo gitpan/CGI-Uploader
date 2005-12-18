@@ -2,7 +2,7 @@ package CGI::Uploader;
 
 use 5.005;
 use strict;
-use CGI::Carp;
+use Carp;
 use Params::Validate qw/:all/;
 use File::Path;
 use File::Spec;
@@ -12,7 +12,7 @@ use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '1.2';
+$VERSION = '2.0';
 
 =head1 NAME
 
@@ -26,15 +26,14 @@ CGI::Uploader - Manage CGI uploads using SQL database
  	spec       => {
         # Upload one image named from the form field 'img' 
         # and create one thumbnail for it. 
-        img_1 => {                                                                                                                             
-            gen_files => {                                                                                                                
-                'img_1_thmb_1' => {                                                                                             
-                    transform_method => \&gen_thumb,                                                                    
-                    params => [ w => 100, h => 100 ],                                                             
-                  }                                                                                                         
-              }                                                                                                                
-        },                                                                                                                            
-    },                
+        img_1 => {    
+            gen_files => {       
+                'img_1_thmb_1' => {
+                    transform_method => gen_thumb({ w => 100, h => 100 }),
+                  }   
+              }                                                                                                 
+        },        
+    },      
 
  	updir_url  => 'http://localhost/uploads',
  	updir_path => '/home/user/www/uploads',
@@ -67,28 +66,23 @@ application.  (Browse, Read, Edit, Add, Delete).
            img_1 => {   
              gen_files => {   
                      'img_1_thmb_1' => {                                                                          
-                             transform_method => \&gen_thumb,                
-                             params => [{ w => 100, h => 100 }],                                                             
-                     }                                                                                                         
-                     'img_1_thmb_2' => {                                                                                      
-                             transform_method => \&gen_thumb, 
-                             params => [{ w => 50, h => 50 }], 
-                     }                                                                                                          
-             }                                                                                                                
-           },                                                                                                                            
+                             transform_method => gen_thumb({ w => 100, h => 100 }),   
+                     }                                                 
+                     'img_1_thmb_2' => {                                       
+                             transform_method => gen_thumb({ w => 50, h => 50 }), 
+                     }    
+             }           
+           },           
        },                
 
         # Just upload it
         img_2 => {},
-
         # Downsize the large image to these maximum dimensions if it's larger
         img_3 => {
-            # Besides generating dependent files                                                                                           
-            # We can also transform the file itself                                                                           
-            # Here, we shrink the image to be wider than 380                                                                    
-            transform_method => \&gen_thumb,                                                                                       
-            params => [{ w => 380 }],                                                                                           
-
+            # Besides generating dependent files                                                           
+            # We can also transform the file itself                              
+            # Here, we shrink the image to be wider than 380    
+            transform_method => gen_thumb({ w => 380 }),
         }
     },
 
@@ -254,7 +248,7 @@ sub new {
     # Support PostgreSQL via ODBC
     $in{db_driver} = 'Pg' if $in{dbh}->get_info(17) eq 'PostgreSQL';
 	unless (($in{db_driver} eq 'mysql') or ($in{db_driver} eq 'Pg') or ($in{db_driver} eq 'SQLite')) {
-		die "only mysql, Pg and SQLite drivers are supported at this time. You are trying to use $in{db_driver}.";
+		croak "only mysql, Pg and SQLite drivers are supported at this time. You are trying to use $in{db_driver}.";
 	}
 
     unless ($in{query}) {
@@ -419,6 +413,8 @@ set these fields to NULL in a database update:
 
  map { $entity->{$_} = undef } @fk_names;
 
+B<NOTE:> This method can not currently be used to delete a generated file by itself. 
+
 =cut 
 
 sub delete_checked_uploads {
@@ -428,7 +424,7 @@ sub delete_checked_uploads {
     my $q = $self->{query};
 	my $map = $self->{up_table_map};
 
-	die "missing gen_from_id in up_table_map"  unless $map->{gen_from_id};
+	croak "missing gen_from_id in up_table_map"  unless $map->{gen_from_id};
 
 
 	my @to_delete;
@@ -436,7 +432,7 @@ sub delete_checked_uploads {
  	for my $file_field (keys %$imgs) {
 		if ($q->param($file_field.'_delete') ) {
 			my $upload_id = $q->param($file_field.'_id') || 
-				die "$file_field was selected to delete, 
+				croak "$file_field was selected to delete, 
 					but ID was missing in '${file_field}_id' field";
 
 			$self->delete_upload($upload_id);
@@ -518,7 +514,6 @@ sub fk_meta {
 	# We don't want the 'WHERE' word that SQL::Abstract adds
 	$stmt =~ s/^\s?WHERE//;
 
-
 	# XXX There is probably a more efficient way to get this data than using N selects
 
     # mysql uses non-standard quoting
@@ -527,7 +522,6 @@ sub fk_meta {
     my $map = $self->{up_table_map};
 
 	for my $field (@file_fields) {
-        warn "field: $field\n";
 		my $upload = $DBH->selectrow_hashref(qq!
 			SELECT * 
 				FROM !.$self->{up_table}.qq!, $table AS t
@@ -623,7 +617,7 @@ sub upload {
 
    require File::Copy;
    import  File::Copy;
-   copy($fh,$tmp_filename) || die "upload: unable to create tmp file: $!";
+   copy($fh,$tmp_filename) || croak "upload: unable to create tmp file: $!";
 
     return ($tmp_filename,$mt,$filename);
 }
@@ -660,10 +654,6 @@ sub store_upload {
             uploaded_mt   => { type => SCALAR },
             file_name     => { type => SCALAR | GLOBREF },
             shared_meta   => { type => HASHREF | UNDEF,    default => {} },
-            # This line is causing a warning to be printed to the Apache error
-            # log by Params::Validate if id_to_update is not set; looks like
-            # an error since optional is set - WLM 2005-07-07
-            #id_to_update  => { regex => qr/^\d*$/, optional => 1 },
             id_to_update  => { type => SCALAR | UNDEF, optional => 1 },
         });
 
@@ -678,13 +668,14 @@ sub store_upload {
 
     # Transform file if needed
     if (my $meth = $self->{spec}{$file_field}{transform_method}) {
-        $tmp_filename = $meth->(
-            $self,
+        $tmp_filename = $meth->( $self, 
             $file_name,
             $self->{spec}{$file_field}{params},
         );
     }
 
+    # XXX The uploaded mime type may have nothing to do with
+    # the current mime-type after it's transformed
     my $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
 
     $shared_meta ||= {};
@@ -695,6 +686,10 @@ sub store_upload {
     if ($id = $id_to_update) {
         # delete old generated files  before we create new ones
         $self->delete_gen_files($id);
+
+        # It's necessary to delete the old file when updating, because 
+        # the new one may have a new extension. 
+        $self->delete_file($id);
     }
 
     # insert or update will be performed as appropriate. 
@@ -771,10 +766,15 @@ sub create_store_gen_files {
         }
 
 		# inherit mime-type and extension from parent
-		my %t_info =  (%$meta, gen_from_id => $gen_from_id);
+        # but merge in updated details for this file
+        my $meta_from_gen_file = $self->extract_meta($gen_tmp_filename,$gen_file);
+           $meta_from_gen_file ||= {};
+		my %t_info =  (%$meta, gen_from_id => $gen_from_id, %$meta_from_gen_file);
+
+
 
         # Try to get image dimensions (will fail safely for non-images)
-		($t_info{width}, $t_info{height}) = imgsize($gen_tmp_filename);
+        #($t_info{width}, $t_info{height}) = imgsize($gen_tmp_filename);
 
 		# Insert		
 		my $id = $self->store_meta($gen_file, \%t_info );
@@ -871,7 +871,6 @@ sub extract_meta {
     my $file_name = shift;
     my $uploaded_mt = shift || '';
 
-    
     #   Determine and set the appropriate file system parsing routines for the 
     #   uploaded path name based upon the HTTP client header information.
     use HTTP::BrowserDetect;
@@ -907,7 +906,8 @@ sub extract_meta {
    # If there is at least one MIME-type found
    if ($mt_exts[0]) {
    		# If the upload extension is one recognized by MIME::Type, use it.
-		if (grep {/^$uploaded_ext$/} @mt_exts) 	 {
+		if ((defined $uploaded_ext) 
+            and (grep {/^$uploaded_ext$/} @mt_exts)) {
 			$ext = $uploaded_ext;
 		}
 		# otherwise, use one from MIME::Type, just to be safe
@@ -925,7 +925,7 @@ sub extract_meta {
         $ext = ".$ext" if $ext;
    }
    else {
-	   die "no extension found for file name: $file_name";
+	   croak "no extension found for file name: $file_name";
    }
 
 
@@ -1106,7 +1106,10 @@ sub transform_meta  {
 
     if ($fields{url}) {
         $result{$p{prefix}.'_url'} = $self->{updir_url}.'/'.
-            $self->build_loc($p{meta}{ $map->{upload_id}   },$p{meta}{extension}).$qs ;
+            $self->build_loc(
+                $p{meta}{ $map->{upload_id} }
+               ,$p{meta}{ $map->{extension} })
+               .$qs ;
         delete $fields{url};
     }
 
@@ -1157,7 +1160,7 @@ Input:
   - file field name
   - path to tmp file for uploaded image
   - file id, as generated by C<store_meta()>
-  - file extension, as discovered by C<extract_meta>
+  - file extension, as discovered by L<extract_meta()>
 
 Output: none
 
@@ -1176,7 +1179,7 @@ sub store_file {
     require File::Copy;
     import File::Copy;
     copy($tmp_file, File::Spec->catdir($self->{updir_path},$self->build_loc($id,$ext)) )
-    || die "Unexpected error occured when uploading the image: $!";
+    || croak "Unexpected error occured when uploading the image: $!";
 
 }
 
@@ -1202,13 +1205,13 @@ sub delete_file {
         SELECT $map->{extension}
             FROM $self->{up_table}
             WHERE $map->{upload_id} = ?",{},$id);
-    $ext || die "found no extension in meta data for ID $id. Deleting file failed.";
+    $ext || croak "found no extension in meta data for ID $id. Deleting file failed.";
 
 
     my $file = $self->{updir_path}.'/'.$self->build_loc($id,$ext);
 
     if (-e $file) {  
-        unlink $file || die "couldn't delete upload  file: $file:  $!";
+        unlink $file || croak "couldn't delete upload  file: $file:  $!";
     }
     else {
         warn "file to delete not found: $file";
