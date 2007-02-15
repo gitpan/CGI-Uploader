@@ -1,5 +1,14 @@
 Revision history for Perl extension CGI::Uploader.
 
+2.12 Thu Feb 15 17:43:20 EST 2007
+
+    [ENHANCEMENTS]
+    - Explicitly call File::Temp::cleanup(). This reduces the amount of 
+      disk space and file handles used.
+
+    - A new 'temp_dir' option has been added to allow to you set your own
+      temporary directory. (Jeff MacDonald)
+
 2.11 Mon Dec 19 20:18:00 EST 2005
     [BUG FIXES]
     - There were was confusion in the 2.1 release as to whether the new API

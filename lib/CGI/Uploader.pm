@@ -12,7 +12,7 @@ use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '2.11';
+$VERSION = '2.12';
 
 =head1 NAME
 
@@ -35,6 +35,7 @@ CGI::Uploader - Manage CGI uploads using SQL database
 
  	updir_url  => 'http://localhost/uploads',
  	updir_path => '/home/user/www/uploads',
+        temp_dir   => '/home/user/www/uploads',
 
  	dbh	       => $dbh,	
 	query      => $q, # defaults to CGI->new(),
@@ -169,6 +170,11 @@ URL to upload storage directory. Should not include a trailing slash.
 File system path to upload storage directory. Should not include a trailing 
 slash.
 
+=item temp_dir 
+
+Optional file system path to temporary directory. Default is File::Spec->tmpdir(). 
+This temporary directory will also be used by gen_files during image transforms.
+
 =item dbh [required]
 
 DBI database handle. Required.
@@ -242,6 +248,10 @@ sub new {
 		up_table     => { 
                           type => SCALAR,
                           default=> 'uploads',
+        },
+        temp_dir   => {
+                type    => SCALAR,
+                default => File::Spec->tmpdir()
         },
         up_table_map => { 
                           type    => HASHREF,
@@ -408,6 +418,8 @@ sub store_uploads {
 	map { delete $entity->{$_} } keys %{ $self->{spec} };
     # For good measure.
     delete $entity->{''};
+
+    File::Temp::cleanup();
 
 	return $entity;
 }
@@ -627,7 +639,7 @@ sub upload {
 
    return undef unless ($fh && $filename);
 
-   my ($tmp_fh, $tmp_filename) = tempfile('CGIuploaderXXXXX', UNLINK => 1);
+   my ($tmp_fh, $tmp_filename) = tempfile('CGIuploaderXXXXX', UNLINK => 1, DIR => $self->{'temp_dir'} );
 
    #   Determine whether binary mode is required in the handling of uploaded 
    #   files - 
@@ -917,10 +929,12 @@ sub extract_meta {
    require File::MMagic;	
    my $mm = File::MMagic->new; 
 
-   my $fm_mt = $mm->checktype_filename($tmp_filename);
+   # If the uploaded  mime_type was not provided  calculate one from the file magic number
+   # if that does not exist, fall back on the file name
+   my $fm_mt = $mm->checktype_magic($tmp_filename);
+      $fm_mt = $mm->checktype_filename($tmp_filename) if (not length $fm_mt) ;
 
-   # If File::MMagic didn't find a mime_type, we'll use the uploaded one.
-   my $mt = ($fm_mt || $uploaded_mt);
+   my $mt = ($uploaded_mt || $fm_mt);
    assert($mt,'found mime type');
 
 

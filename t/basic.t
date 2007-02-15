@@ -86,7 +86,9 @@ use CGI;
     my $id_of_test_file_parent = 1;
     my $id_of_test_file_gen    = 2;
 
-    my $new_file_contents = read_file("t/uploads/$id_of_test_file_gen.asc"); 
+    my $new_file_contents; 
+    eval { $new_file_contents = read_file("t/uploads/$id_of_test_file_gen.txt"); };
+    is($@, '', 'survived eval') || diag `ls -l t/uploads/`;
     like($new_file_contents,qr/gen/, "generated file is as expected");
 
 	$Test::DatabaseRow::dbh = $DBH;
@@ -133,7 +135,7 @@ use CGI;
      row_ok( sql   => "SELECT * FROM uploads  WHERE upload_id= $id_of_test_file_gen",
                  tests => [ 
  					mime_type        => 'text/plain',
- 					extension        => '.asc',
+ 					extension        => '.txt',
  				    width	         => undef,		
  					height	         => undef,
  					gen_from_id      => $id_of_test_file_parent,
