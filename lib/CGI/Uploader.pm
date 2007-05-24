@@ -12,7 +12,7 @@ use Image::Size;
 require Exporter;
 use vars qw($VERSION);
 
-$VERSION = '2.13';
+$VERSION = '2.14';
 
 =head1 NAME
 
@@ -557,7 +557,7 @@ sub fk_meta {
 		my $upload = $DBH->selectrow_hashref(qq!
 			SELECT * 
 				FROM !.$self->{up_table}.qq!, $table AS t
-				WHERE ($map->{upload_id} = t.${qt}${field}_id${qt} and ($stmt) )!,
+                WHERE ($self->{up_table}.$map->{upload_id} = t.${qt}${field}_id${qt} and ($stmt) )!,
 				{},@bind);
 
             my %upload_fields = $self->transform_meta(
