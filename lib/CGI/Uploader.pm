@@ -3,16 +3,16 @@ package CGI::Uploader;
 use 5.005;
 use strict;
 use Carp;
-use Params::Validate qw/:all/;
+use Params::Validate ':all';
 use File::Path;
 use File::Spec;
-use File::Temp qw/tempfile/;
+use File::Temp 'tempfile';
 use Carp::Assert;
 use Image::Size;
 require Exporter;
-use vars qw($VERSION);
+use vars '$VERSION';
 
-$VERSION = '2.14';
+$VERSION = '2.15';
 
 =head1 NAME
 
@@ -232,7 +232,13 @@ result may look like this:
  2/0/2/123.jpg
 
 This should scale well to millions of files. If you want even more control,
-consider overriding the C<build_loc()> method.
+consider overriding the C<build_loc()> method, which is  used to return the
+stored file path.
+
+Note that specifying the file storage scheme for the file system is not related
+to the C<file_name> stored in the database, which is always the original uploaded
+file name.
+
 
 =back 
 

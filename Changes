@@ -1,5 +1,12 @@
 Revision history for Perl extension CGI::Uploader.
 
+2.15 Sun Jul 15 07:21:24 EDT 2007
+    - no functionality changes
+
+    [INTERNAL]
+    - improved importing code style.
+    - Clarify docs regarding file_scheme vs. file_name (Jaldhar)
+
 2.14 Thu May 24 13:19:27 EDT 2007
 
     [BUG FIXES]
