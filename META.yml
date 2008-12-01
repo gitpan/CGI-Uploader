@@ -1,0 +1,38 @@
+---
+name: CGI-Uploader
+version: 2.90_01
+author:
+  - 'Mark Stosberg, Ron Savage <ron@savage.net.au>'
+abstract: Manage CGI uploads using an SQL database
+license: artistic
+resources:
+  license: http://opensource.org/licenses/artistic-license.php
+requires:
+  File::Basename: 0
+  File::Copy: 0
+  File::Path: 0
+  File::Spec: 0
+  File::Temp: 0
+  HTML::Template: 0
+  HTTP::BrowserDetect: 0
+  Image::Size: 0
+  MIME::Types: 0
+  Params::Validate: 0
+  Squirrel: 0
+build_requires:
+  Test::More: 0
+  Test::Pod: 0
+provides:
+  CGI::Uploader:
+    file: lib/CGI/Uploader.pm
+    version: 2.90_01
+  CGI::Uploader::Config:
+    file: lib/CGI/Uploader/Config.pm
+    version: 2.90_01
+  CGI::Uploader::Test:
+    file: lib/CGI/Uploader/Test.pm
+    version: 2.90_01
+generated_by: Module::Build version 0.280801
+meta-spec:
+  url: http://module-build.sourceforge.net/META-spec-v1.2.html
+  version: 1.2

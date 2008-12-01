@@ -1,1413 +1,1997 @@
 package CGI::Uploader;
 
-use 5.005;
 use strict;
-use Carp;
-use Params::Validate ':all';
+use warnings;
+
+use File::Basename;
+use File::Copy; # For copy.
 use File::Path;
 use File::Spec;
 use File::Temp 'tempfile';
-use Carp::Assert;
-use Image::Size;
-require Exporter;
-use vars '$VERSION';
 
-$VERSION = '2.15';
+use HTTP::BrowserDetect;
+
+use Image::Size;
+
+use MIME::Types;
+
+use Params::Validate ':all';
+
+use Squirrel;
+
+our $VERSION = '2.90_01';
+
+# -----------------------------------------------
+
+has dbh      => (is => 'rw', required => 0, predicate => 'has_dbh', isa => 'Any');
+has dsn      => (is => 'rw', required => 0, predicate => 'has_dsn', isa => 'Any');
+has imager   => (is => 'rw', required => 0, isa => 'Any');
+has query    => (is => 'rw', required => 0, predicate => 'has_query', isa => 'Any');
+has manager  => (is => 'rw', required => 0, isa => 'Any');
+has temp_dir => (is => 'rw', required => 0, predicate => 'has_temp_dir', isa => 'Any');
+
+# -----------------------------------------------
+
+sub BUILD
+{
+	my($self) = @_;
+
+	# See if the caller specifed a dsn but no dbh.
+
+	if ($self -> has_dsn() && ! $self -> has_dbh() )
+	{
+		require DBI;
+
+		$self -> dbh(DBI -> connect(@{$self -> dsn()}) );
+	}
+
+	# Ensure a query object is available.
+
+	if ($self -> has_query() )
+	{
+		my($ok)   = 0;
+		my(@type) = (qw/Apache::Request Apache2::Request CGI/);
+
+		my($type);
+
+		for $type (@type)
+		{
+			if ($self -> query() -> isa($type) )
+			{
+				$ok = 1;
+
+				last;
+			}
+		}
+
+		if (! $ok)
+		{
+			confess 'Your query object must be one of these types: ' . join(', ', @type);
+		}
+	}
+	else
+	{
+		require CGI;
+
+		$self -> query(CGI -> new() );
+	}
+
+	# Ensure a temp dir name is available.
+
+	if (! $self -> has_temp_dir() )
+	{
+		$self -> temp_dir(File::Spec -> tmpdir() );
+	}
+
+}	# End of BUILD.
+
+# -----------------------------------------------
+
+sub calculate_dimensions
+{
+	my($self, $image, $option) = @_;
+
+	if (! ($$option{'width'} || $$option{'height'}) )
+	{
+		die "transform option requires at least one of width and height";
+	}
+
+	my($original_width, $original_height) = $image -> Get('width', 'height');
+	my($new_width, $new_height)           = ($$option{'width'}, $$option{'height'});
+
+	if (! $new_width)
+	{
+		$new_width = sprintf("%.1d", ($original_width * $new_height) / $original_height);
+	}
+
+	if (! $new_height)
+	{
+		$new_height = sprintf("%.1d", ($original_height * $new_width) / $original_width);
+	}
+
+	return sprintf '%i x %i', $new_width, $new_height;
+
+} # End of calculate_dimensions.
+
+# -----------------------------------------------
+
+sub copy_temp_file
+{
+	my($self, $temp_file_name, $meta_data, $option) = @_;
+	my($path) = $$option{'path'};
+	$path     =~ s|^(.+)/$|$1|;
+
+	if ($$option{'file_scheme'} eq 'md5')
+	{
+		require Digest::MD5;
+
+		import Digest::MD5  qw/md5_hex/;
+
+		my($md5) = md5_hex($$meta_data{'id'});
+		$md5     =~ s|^(.)(.)(.).*|$1/$2/$3|;
+		$path    = File::Spec -> catdir($path, $md5);
+	}
+
+	if (! -e $path)
+	{
+		File::Path::mkpath($path);
+	}
+
+	my($extension)                  = $$meta_data{'extension'};
+	$extension                      = $extension ? ".$extension" : '';
+	$$meta_data{'server_file_name'} = File::Spec -> catdir($path, "$$meta_data{'id'}$extension");
+
+	copy($temp_file_name, $$meta_data{'server_file_name'});
+
+} # End of copy_temp_file.
+
+# -----------------------------------------------
+
+sub default_column_map
+{
+	my($self) = @_;
+
+	return
+	{
+	 client_file_name => 'client_file_name',
+	 date_stamp       => 'date_stamp',
+	 extension        => 'extension',
+	 height           => 'height',
+	 id               => 'id',
+	 mime_type        => 'mime_type',
+	 parent_id        => 'parent_id',
+	 server_file_name => 'server_file_name',
+	 size             => 'size',
+	 width            => 'width',
+	};
+
+} # End of default_column_map.
+
+# -----------------------------------------------
+
+sub default_dbh
+{
+	my($self, $dsn) = @_;
+
+	if (! $self -> has_dbh() )
+	{
+		# The called checked that at least one of dbh and dsn was specified.
+		# So, we don't need to test for dsn here.
+
+		require DBI;
+
+		$self -> dbh(DBI -> connect(@$dsn) );
+	}
+
+} # End of default_dbh.
+
+# -----------------------------------------------
+
+sub delete
+{
+	my($self, %field)       = @_;
+	my($field)              = $self -> validate_delete_options(%field);
+	my($id_column)          = $$field{'column_map'}{'id'};
+	my($parent_id_column)   = $$field{'column_map'}{'parent_id'};
+	my($table_name)         = $$field{'table_name'};
+	my($server_file_column) = $$field{'column_map'}{'server_file_name'};
+
+	# Ensure a dbh or dsn was specified.
+
+	if (! ($field{'dbh'} || $field{'dsn'}) )
+	{
+		confess "You must provide at least one of dbh and dsn for 'delete'";
+	}
+
+	# Use either the caller's dbh or fabricate one.
+
+	$self -> default_dbh($field{'dsn'});
+
+	# Phase 1: The generated files.
+
+	my($data)   = $self -> dbh() -> selectall_arrayref("select * from $table_name where $parent_id_column = ?", {Slice => {} }, $$field{'id'}) || [];
+	my($result) = [];
+
+	my(@file);
+	my(@id);
+	my($row);
+
+	for $row (@$data)
+	{
+		if ($$row{$server_file_column})
+		{
+			push @file, $$row{$server_file_column};
+			push @id,   $$row{$id_column};
+		}
+	}
+
+	my($i);
+
+	for $i (0 .. $#file)
+	{
+		unlink $file[$i];
+
+		push @$result,
+		{
+			id        => $id[$i],
+			file_name => $file[$i],
+		};
+	}
+
+
+	# Phase 2: The generated table rows.
+
+	$self -> dbh() -> do("delete from $table_name where $id_column = $_") for @id;
+
+	# Phase 3: The uploaded file.
+
+	$data = $self -> dbh() -> selectrow_hashref("select * from $table_name where $id_column = ?", {}, $$field{'id'});
+
+	if ($$data{$server_file_column})
+	{
+		unlink $$data{$server_file_column};
+
+		push @$result,
+		{
+			id        => $$data{$id_column},
+			file_name => $$data{$server_file_column},
+		};
+	}
+
+	# Phase 4: The uploaded table row.
+
+	$self -> dbh() -> do("delete from $table_name where $id_column = $$field{'id'}");
+
+	return $result;
+
+} # End of delete.
+
+# -----------------------------------------------
+# Note: $field_name is not used in the default manager.
+
+sub do_insert
+{
+	my($self, $field_name, $meta_data, $option) = @_;
+
+	# Use either the caller's dbh or fabricate one.
+
+	$self -> default_dbh($$option{'dsn'});
+
+	my($db_server) = $self -> dbh() -> get_info(17);
+	my($sql)       = "insert into $$option{'table_name'}";
+
+	# Ensure, if the caller is using Postgres, and they want the id field populated,
+	# that we stuff the next value from the caller's sequence into it.
+
+	if ( ($db_server eq 'PostgreSQL') && $$option{'column_map'}{'id'})
+	{
+		$$meta_data{'id'} = $self -> dbh() -> selectrow_array("select nextval('$$option{'sequence_name'}')");
+	}
+
+	my(@bind);
+	my(@column);
+	my($key);
+
+	for $key (keys %$meta_data)
+	{
+		# Skip columns the caller does not want processed.
+
+		if (! $$option{'column_map'}{$key})
+		{
+			next;
+		}
+
+		push @column, $$option{'column_map'}{$key};
+
+		# For SQLite, we must use undef for the id, since DBIx::Admin::CreateTable's
+		# method generate_primary_key_sql() returns 'integer primary key auto_increment'
+		# for an SQLite primary key, and SQLite demands a NULL be inserted to get the
+		# autoincrement part of that to work. See http://www.sqlite.org/faq.html#q1.
+
+		push @bind, ( ($db_server eq 'SQLite') && ($key eq 'id') ) ? undef : $$meta_data{$key};
+	}
+
+	$sql     .= '(' . join(', ', @column) . ') values (' . ('?, ' x $#bind) . '?)';
+	my($sth) = $self -> dbh() -> prepare($sql);
+
+	$sth -> execute(@bind);
+
+	$$meta_data{'id'} = $self -> dbh() -> last_insert_id(undef, undef, $$option{'table_name'}, undef);
+
+} # End of do_insert.
+
+# -----------------------------------------------
+
+sub do_transform
+{
+	my($self, $old_file_name, $meta_data, $option) = @_;
+	my($temp_fh, $temp_file_name) = tempfile('CGIuploaderXXXXX', UNLINK => 1, DIR => $self -> temp_dir() );
+
+	if (! $$option{'imager'})
+	{
+		require Image::Magick;
+
+		$$option{'imager'} = Image::Magick -> new();
+	}
+
+	if ($$option{'imager'} -> isa('Image::Magick') )
+	{
+		my($result)     = $$option{'imager'} -> Read($old_file_name);
+		my($dimensions) = $self -> calculate_dimensions($$option{'imager'}, $$option{'options'});
+		$result         = $$option{'imager'} -> Resize($dimensions);
+		$result         = $$option{'imager'} -> Write($temp_file_name);
+	}
+	elsif ($$option{'imager'} -> isa('Imager') )
+	{
+		my($result)     = $$option{'imager'} -> read(file => $old_file_name, type => $$meta_data{'extension'});
+		my($new_image)  = $$option{'imager'} -> scale(%{$$option{'options'} });
+		my($extension)  = $$meta_data{'extension'};
+		$extension      = $extension ? ".$extension" : '';
+		$temp_file_name = "$temp_file_name$extension";
+		$result         = $new_image -> write(file => $temp_file_name, type => $$meta_data{'extension'});
+	}
+
+	$$meta_data{'size'} = (stat $temp_file_name)[7];
+
+	return ($temp_fh, $temp_file_name);
+
+} # End of do_transform.
+
+# -----------------------------------------------
+
+sub do_update
+{
+	my($self, $field_name, $meta_data, $option) = @_;
+
+	# Skip columns the caller does not want processed.
+	# o This is the SQL with the default columns, i.e. the maximum number which are meaningful by default.
+	# o my($sql) = "update $$option{'table_name'} set server_file_name = ?, height = ?, width = ? where id = ?";
+
+	my($column, @clause);
+	my(@bind);
+
+	for $column (qw/server_file_name height width/)
+	{
+		if ($$option{'column_map'}{$column})
+		{
+			push @clause, "$$option{'column_map'}{$column} = ?";
+			push @bind, $$meta_data{$column};
+		}
+	}
+
+	if (@clause)
+	{
+		my($sql) = "update $$option{'table_name'} set " . join(', ', @clause) .
+			" where $$option{'column_map'}{'id'} = ?";
+
+		my($sth) = $self -> dbh() -> prepare($sql);
+
+		$sth -> execute(@bind, $$meta_data{'id'});
+	}
+
+} # End of do_update.
+
+# -----------------------------------------------
+
+sub do_upload
+{
+	my($self, $field_name, $temp_file_name) = @_;
+	my($q)         = $self -> query();
+	my($file_name) = $q -> param($field_name);
+
+	# Now strip off the volume/path info, if any.
+
+	my($client_os) = $^O;
+	my($browser)   = HTTP::BrowserDetect -> new();
+	$client_os     = 'MSWin32' if ($browser -> windows() );
+	$client_os     = 'MacOS'   if ($browser -> mac() );
+	$client_os     = 'Unix'    if ($browser->macosx() );
+
+	File::Basename::fileparse_set_fstype($client_os);
+
+	$file_name = File::Basename::fileparse($file_name,[]);
+
+	my($fh);
+	my($mime_type);
+
+	if ($q -> isa('Apache::Request') || $q -> isa('Apache2::Request') )
+	{
+		my($upload) = $q -> upload($field_name);
+		$fh         = $upload -> fh();
+		$mime_type  = $upload -> type();
+	}
+	else # It's a CGI.
+	{
+		$fh        = $q -> upload($field_name);
+		$mime_type = $q -> uploadInfo($fh);
+
+		if ($mime_type)
+		{
+			$mime_type = $$mime_type{'Content-Type'};
+		}
+
+		if (! $fh && $q -> cgi_error() )
+		{
+			confess $q -> cgi_error();
+		}
+	}
+
+	if (! $fh)
+	{
+		confess 'Unable to generate a file handle';
+	}
+
+	binmode($fh);
+	copy($fh, $temp_file_name) || confess "Unable to create temp file '$temp_file_name': $!";
+
+	# Determine the file extension, if any.
+
+	my($mime_types) = MIME::Types -> new();
+	my($type)       = $mime_types -> type($mime_type);
+	my(@extension)  = $type ? $type -> extensions() : ();
+	my($client_ext) = ($file_name =~ m/\.([\w\d]*)?$/);
+	$client_ext     = '' if (! $client_ext);
+	my($server_ext) = '';
+
+	if ($extension[0])
+	{
+		# If the client extension is one recognized by MIME::Type, use it.
+
+		if (defined($client_ext) && (grep {/^$client_ext$/} @extension) )
+		{
+			$server_ext = $client_ext;
+		}
+	}
+	else
+	{
+		# If is a provided extension but no MIME::Type extension, use that.
+
+		$server_ext = $client_ext;
+	}
+
+	return
+	{
+		client_file_name => $file_name,
+		date_stamp       => 'now()',
+		extension        => $server_ext,
+		height           => 0,
+		id               => 0,
+		mime_type        => $mime_type || '',
+		parent_id        => 0,
+		server_file_name => '',
+		size             => (stat $temp_file_name)[7],
+		width            => 0,
+	};
+
+} # End of do_upload.
+
+# -----------------------------------------------
+
+sub generate
+{
+	my($self, %field) = @_;
+	my($field)        = $self -> validate_generate_options(%field);
+
+	# Ensure a dbh or dsn was specified.
+
+	if (! $self -> has_dbh() && ! ($$field{'dbh'} || $$field{'dsn'}) )
+	{
+		confess "You must provide at least one of dbh and dsn for 'generate'";
+	}
+
+	# Use either the caller's dbh or fabricate one.
+
+	$self -> default_dbh($$field{'dsn'});
+
+	my(@id)         = keys %{$$field{'records'} };
+	my($sql)        = "select * from $$field{'table_name'} where $$field{'column_map'}{'id'} in (" . ('?, ') x $#id . '?)';
+	my($data)      = $self -> dbh() -> selectall_hashref($sql, 'id', {}, @id);
+	my($map)       = $self -> default_column_map();
+	my($meta_data) = {};
+	my($option)    = {};
+	my($column)    = {};
+
+	my($id);
+	my($key);
+	my(@new_id, %new_id);
+	my($record);
+	my($temp_file_name);
+
+	for $id (keys %$data)
+	{
+		for $key (keys %$map)
+		{
+			# Skip columns the caller does not want processed.
+
+			if (! $$field{'column_map'}{$key})
+			{
+				next;
+			}
+
+			$$column{$key} = $$data{$id}{$$field{'column_map'}{$key} };
+		}
+
+		@new_id = ();
+
+		# Simplify the interface. Allow the user to replace $id => [{...}] with $id => {...}.
+		# So, here we turn {...} back in to [{...}].
+
+		if (ref($$field{'records'}{$id}) eq 'HASH')
+		{
+			$$field{'records'}{$id} = [$$field{'records'}{$id}];
+		}
+
+		for $record (@{$$field{'records'}{$id} })
+		{
+			# Note:
+			# o do_transform()      updates $$meta_data{'size'}
+			# o do_insert()         updates $$meta_data{'id'}
+			# o do_copy_temp_file() updates $$meta_data{'server_file_name'}
+			# o get_size()          updates $$meta_data{'width'}
+			# o get_size()          updates $$meta_data{'height'}
+
+			$$option{'imager'}        = $$record{'imager'} || $self -> imager();
+			$$option{'options'}       = $$record{'options'};
+			$$meta_data{'extension'}  = $$column{'extension'};
+			$temp_file_name           = $self -> do_transform($$column{'server_file_name'}, $meta_data, $option);
+			$$option{'column_map'}    = $$field{'column_map'};
+			$$option{'file_scheme'}   = $$field{'file_scheme'};
+			$$option{'path'}          = $$field{'path'};
+			$$option{'sequence_name'} = $$field{'sequence_name'};
+			$$option{'table_name'}    = $$field{'table_name'}; # Preserve size from do_transform().
+			$$meta_data{$_}           = $$column{$_} for grep{! /size/} keys %$column;
+			$$meta_data{'parent_id'}  = $id;
+
+			$$field{'manager'} -> do_insert($$meta_data{'server_file_name'}, $meta_data, $option);
+			$self -> copy_temp_file($temp_file_name, $meta_data, $option);
+			$self -> get_size($meta_data);
+
+			$sql = "update $$field{'table_name'} set $$field{'column_map'}{'width'} = ?, " .
+				"$$field{'column_map'}{'height'} = ? where $$field{'column_map'}{'id'} = ?";
+
+			$self -> dbh() -> do($sql, {}, $$meta_data{'height'}, $$meta_data{'width'}, $$meta_data{'id'});
+
+			push @new_id, $$meta_data{'id'};
+
+			File::Temp::cleanup();
+		}
+
+		$new_id{$id} = [@new_id];
+	}
+
+	return \%new_id;
+
+} # End of generate.
+
+# -----------------------------------------------
+
+sub get_size
+{
+	my($self, $meta_data) = @_;
+	my(@size)             = Image::Size::imgsize($$meta_data{'server_file_name'});
+	$$meta_data{'height'} = $size[0] ? $size[0] : 0;
+	$$meta_data{'width'}  = $size[0] ? $size[1] : 0;
+
+} # End of get_size.
+
+# -----------------------------------------------
+
+sub upload
+{
+	my($self, %field) = @_;
+
+	# Loop over the CGI form fields.
+
+	my($field_name, $field_option);
+	my($id);
+	my($meta_data, @meta_data);
+	my($store, $store_option);
+
+	for $field_name (sort keys %field)
+	{
+		$field_option = $field{$field_name};
+
+		# Perform the upload for this field.
+
+		my($temp_fh, $temp_file_name) = tempfile('CGIuploaderXXXXX', UNLINK => 1, DIR => $self -> temp_dir() );
+		$meta_data                    = $self -> do_upload($field_name, $temp_file_name);
+		my($store_count)              = 0;
+
+		# Loop over all store options.
+
+		for $store_option (@$field_option)
+		{
+			$store_count++;
+
+			# Ensure a dbh or dsn was specified.
+
+			if (! ($$store_option{'dbh'} || $$store_option{'dsn'}) )
+			{
+				confess "You must provide at least one of dbh and dsn for form field '$field_name'";
+			}
+
+			$store_option = $self -> validate_upload_options(%$store_option);
+
+			if ($$store_option{'transform'})
+			{
+				$temp_file_name = $self -> do_transform($temp_file_name, $meta_data, $$store_option{'transform'});
+			}
+
+			$$store_option{'manager'} -> do_insert($field_name, $meta_data, $store_option);
+			$self -> copy_temp_file($temp_file_name, $meta_data, $store_option);
+
+			if ($store_count == 1)
+			{
+				$self -> get_size($meta_data);
+				$$store_option{'manager'} -> do_update($field_name, $meta_data, $store_option);
+			}
+
+			push @meta_data, {field => $field_name, id => $$meta_data{'id'} };
+		}
+
+		File::Temp::cleanup();
+	}
+
+	return \@meta_data;
+
+} # End of upload.
+
+# -----------------------------------------------
+
+sub validate_delete_options
+{
+	my($self)  = shift @_;
+	my(%param) = validate
+	(
+	 @_,
+	 {
+		 column_map =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | HASHREF,
+		 },
+		 dbh =>
+		 {
+			 callbacks =>
+			 {
+				 postgres => sub
+				 {
+					 my($result) = 1;
+
+					 # If there is a dbh, is the database Postgres,
+					 # and, if so, is the sequence_name provided?
+
+					 if ($$_[0])
+					 {
+						 my($db_server) = $$_[0] -> get_info(17);
+
+						 $result = ($db_server eq 'PostgreSQL') ? $$_[1]{'sequence_name'} : 1;
+					 }
+
+					 return $result;
+				 },
+			 },
+			 optional => 1,
+			 type     => UNDEF | SCALAR,
+		 },
+		 dsn =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | ARRAYREF,
+		 },
+		 id =>
+		 {
+			 type => SCALAR,
+		 },
+		 table_name =>
+		 {
+			 type => SCALAR,
+		 },
+	 },
+	);
+
+	# Must do this separately, because when undef is passed in,
+	# Params::Validate does not honour the default clause :-(.
+
+	$param{'column_map'} ||= $self -> default_column_map();
+
+	return {%param};
+
+} # End of validate_delete_options.
+
+# -----------------------------------------------
+
+sub validate_generate_options
+{
+	my($self)  = shift @_;
+	my(%param) = validate
+	(
+	 @_,
+	 {
+		 column_map =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | HASHREF,
+		 },
+		 dbh =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | SCALAR,
+		 },
+		 dsn =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | ARRAYREF,
+		 },
+		 file_scheme =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | SCALAR,
+		 },
+		 manager =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | SCALAR,
+		 },
+		 path =>
+		 {
+			 type => SCALAR,
+		 },
+		 records =>
+		 {
+			 type => HASHREF,
+		 },
+		 sequence_name =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | SCALAR,
+		 },
+		 table_name =>
+		 {
+			 type => SCALAR,
+		 },
+	 },
+	);
+
+	# Must do this separately, because when undef is passed in,
+	# Params::Validate does not honour the default clause :-(.
+
+	$param{'column_map'}  ||= $self -> default_column_map();
+	$param{'file_scheme'} ||= 'simple';
+	$param{'manager'}     ||= $self -> manager() || $self;
+
+	return {%param};
+
+} # End of validate_generate_options.
+
+# -----------------------------------------------
+
+sub validate_upload_options
+{
+	my($self)  = shift @_;
+	my(%param) = validate
+	(
+	 @_,
+	 {
+		 column_map =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | HASHREF,
+		 },
+		 dbh =>
+		 {
+			 callbacks =>
+			 {
+				 postgres => sub
+				 {
+					 my($result) = 1;
+
+					 # If there is a dbh, is the database Postgres,
+					 # and, if so, is the sequence_name provided?
+
+					 if ($$_[0])
+					 {
+						 my($db_server) = $$_[0] -> get_info(17);
+
+						 $result = ($db_server eq 'PostgreSQL') ? $$_[1]{'sequence_name'} : 1;
+					 }
+
+					 return $result;
+				 },
+			 },
+			 optional => 1,
+			 type     => UNDEF | SCALAR,
+		 },
+		 dsn =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | ARRAYREF,
+		 },
+		 file_scheme =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | SCALAR,
+		 },
+		 imager =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | SCALAR,
+		 },
+		 manager =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | SCALAR,
+		 },
+		 path =>
+		 {
+			 type => SCALAR,
+		 },
+		 sequence_name =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | SCALAR,
+		 },
+		 table_name =>
+		 {
+			 type => SCALAR,
+		 },
+		 transform =>
+		 {
+			 optional => 1,
+			 type     => UNDEF | HASHREF,
+		 },
+	 },
+	);
+
+	# Must do these separately, because when undef is passed in,
+	# Params::Validate does not honour the default clause :-(.
+
+	$param{'column_map'}  ||= $self -> default_column_map();
+	$param{'file_scheme'} ||= 'simple';
+	$param{'imager'}      ||= $self -> imager();
+	$param{'manager'}     ||= $self -> manager() || $self;
+
+	return {%param};
+
+} # End of validate_upload_options.
+
+# -----------------------------------------------
+
+1;
+
+=pod
 
 =head1 NAME
 
-CGI::Uploader - Manage CGI uploads using SQL database
+CGI::Uploader - Manage CGI uploads using an SQL database
 
 =head1 Synopsis
 
- use CGI::Uploader::Transform::ImageMagick (qw/gen_thumb/);
+	# Create an upload object
+	# -----------------------
 
- my $u = CGI::Uploader->new(
- 	spec       => {
-        # Upload one image named from the form field 'img' 
-        # and create one thumbnail for it. 
-        img_1 => {    
-            gen_files => {       
-                'img_1_thmb_1' => gen_thumb({ w => 100, h => 100 }),
-              }                                                                                                 
-        },        
-    },      
+	my($u) = CGI::Uploader -> new # Mandatory.
+	(
+		dbh      => $dbh,  # Optional. Or specify in call to upload().
+		dsn      => [...], # Optional. Or specify in call to upload().
+		imager   => $obj,  # Optional. Or specify in call to upload's transform.
+		manager  => $obj,  # Optional. Or specify in call to upload().
+		query    => $q,    # Optional.
+		temp_dir => $t,    # Optional.
+	);
 
- 	updir_url  => 'http://localhost/uploads',
- 	updir_path => '/home/user/www/uploads',
-        temp_dir   => '/home/user/www/uploads',
+	# Upload N files
+	# --------------
 
- 	dbh	       => $dbh,	
-	query      => $q, # defaults to CGI->new(),
- );
+	my($meta_data) = $u -> upload # Mandatory.
+	(
+	form_field_1 => # An arrayref of hashrefs. The keys are CGI form field names.
+	[
+	{ # First, mandatory, set of options for storing the uploaded file.
+	column_map    => {...}, # Optional.
+	dbh           => $dbh,  # Optional. But one of dbh or dsn is
+	dsn           => [...], # Optional. mandatory if no manager.
+	file_scheme   => $s,    # Optional.
+	manager       => $obj,  # Optional. If present, all others params are optional.
+	sequence_name => $s,    # Optional, but mandatory if Postgres and no manager.
+	table_name    => $s,    # Optional if manager, but mandatory if no manager.
+	transform     => {...}  # Optional.
+	},
+	{ # Second, etc, optional sets of options for storing copies of the file.
+	},
+	],
+	form_field_2 => [...], # Another arrayref of hashrefs.
+	);
 
- # ... now do something with $u
+	# Delete N files for each uploaded file
+	# -------------------------------------
+
+	my($report) = $u -> delete # Optional.
+	(
+	column_map => {...}, # Mandatory.
+	dbh        => $dbh,  # Optional. But one of dbh or dsn is
+	dsn        => [...], # Optional. mandatory.
+	id         => $id,   # Mandatory.
+	table_name => $s,    # Mandatory.
+	);
+
+	# Generate N files from each uploaded file
+	# ----------------------------------------
+
+	$u -> generate # Optional.
+	(
+	form_field_1 => [...], # Mandatory. An arrayref of hashrefs.
+	form_field_2 => [...], # Mandatory. Another arrayref of hashrefs.
+	);
+
+The simplest option, then, is to use
+
+	CGI::Uploader -> new() -> upload(file_name => [{dbh => $dbh, table_name => 'uploads'}]);
+
+and let C<CGI::Uploader> do all the work.
+
+For Postgres, make that
+
+	CGI::Uploader -> new() -> upload(file_name => [{dbh => $dbh, sequence_name => 'uploads_id_seq', table_name => 'uploads'}]);
 
 =head1 Description
 
-This module is designed to help with the task of managing files uploaded
-through a CGI application. The files are stored on the file system, and
-the file attributes stored in a SQL database. 
+C<CGI::Uploader> is a pure Perl module.
 
-=head1 Introduction and Recipes
+=head1 Warning: V 2 'v' V 3
 
-The L<CGI::Uploader::Cookbook|CGI::Uploader::Cookbook> provides 
-a slightly more in depth introduction and recipes for a basic BREAD web
-application.  (Browse, Read, Edit, Add, Delete).  
+The API for C<CGI::Uploader> version 3 is not compatible with the API for version 2.
 
-=head1 Constructor
+This is because V 3 is a complete rewrite of the code, taking in to account all the things
+learned from V 2.
 
-=head2 new()
+=head1 Constructor and initialization
 
- my $u = CGI::Uploader->new(
- 	spec       => {
-         # The first image has 2 different sized thumbnails                                                                                      
-           img_1 => {   
-             gen_files => {   
-                     'img_1_thmb_1' => gen_thumb({ w => 100, h => 100 }),   
-                     'img_1_thmb_2' => gen_thumb({ w => 50, h => 50 }), 
-             }           
-           },           
-       },                
+C<new()> returns a C<CGI::Uploader> object.
 
-        # Just upload it
-        img_2 => {},
-        # Downsize the large image to these maximum dimensions if it's larger
-        img_3 => {
-            # Besides generating dependent files                                                           
-            # We can also transform the file itself                              
-            # Here, we shrink the image to be wider than 380    
-            transform_method => \&gen_thumb, 
-            # demostrating the old-style param passing
-            params => [{ w => 380 }],
-        }
-    },
+This is the class's contructor.
 
- 	updir_url  => 'http://localhost/uploads',
- 	updir_path => '/home/user/www/uploads',
+You must pass a hash to C<new()>.
 
- 	dbh	       => $dbh,	
-	query      => $q, # defaults to CGI->new(),
-
- 	up_table   => 'uploads', # defaults to "uploads"
-	up_seq     => 'upload_id_seq',  # Required for Postgres
- );
+Options:
 
 =over 4
 
-=item spec [required]
+=item dbh => $dbh
 
-The specification described the examples above. The keys correspond to form
-field names for upload fields. 
+This key may be specified globally or in the call to C<upload()>.
 
-The values are hash references. The simplest case is an empty hash  reference,
-which means to just upload the image and apply no transformations.
+See L<Details|/Details> for an explanation, including how this key interacts with I<dsn>.
 
-#####
+This key (dbh) is optional.
 
-Each key in the hash is the corresponds to a file upload field. The values
-are hash references used provide options for how to transform the file, 
-and possibly generate additional files based on it. 
+=item dsn => [...]
 
-Valid keys here are:
+This key may be specified globally or in the call to C<upload()>.
 
-=item transform_method
+See L<Details|/Details> for an explanation, including how this key interacts with I<dbh>.
 
-This is a subroutine reference. This routine can be used to transform the
-upload before it is stored. The first argument given to the routine will be the
-CGI::Uploader object. The second will be a full path to a file name containing
-the upload.
+This key (dsn) is optional.
 
-Additional arguments can be passed to the subroutine using C<params>, as in the
-example above. But don't do that, it's ugly. If you need a custom transform
-method, write a little closure for it like this:
+=item imager => $obj
 
-  sub my_transformer {
-      my %args = @_;
-      return sub {
-          my ($self, $file) = shift;
-          # do something with $file and %args here...
-          return $path_to_new_file_i_made;
-      }
+This key may be specified globally or in the call to C<upload>'s I<transform>.
 
-Then in the  spec you can put:
+This object is used to handle the transformation of images.
 
- transform_method => my_tranformer(%args),
+This key (imager) is optional.
 
-It must return a full path to a transformed file. 
+=item manager => $obj
 
-}
+This key may be specified globally or in the call to C<upload()>.
 
-=item params (DEPRECATED)
+This object is used to handle the transfer of meta-data into the database. See L<Meta-data|/Meta-data>.
 
-B<NOTE:> Using a closure based interface provides a cleaner alternative to
-using params. See L<CGI::Uploader::Transform::ImageMagick> for an example.
+This key (manager) is optional.
 
-Used to pass additional arguments to C<transform_method>. See above. 
+=item query => $q
 
-Each method used may have additional documentation about parameters
-that can be passed to it.
+Use this to pass in a query object.
 
+This object is expected to belong to one of these classes:
 
-=item gen_files
+=over 4
 
-A hash reference to describe files generated from a particular upload.
-The keys are unique identifiers  for the generated files. The values 
-are code references (usually closures) that prove a transformation
-for the file. See L<CGI::Uploader::Transform::ImageMagick> for an
-an example. 
+=item Apache::Request
 
-An older interface for C<gen_files> is deprecated. For that, the values are
-hashrefs, containing keys named C<transform_method> and C<params>, which work
-as described above to generate a transformed version of the file.  
+=item Apache2::Request
 
-=item updir_url [required]
-
-URL to upload storage directory. Should not include a trailing slash.
-
-=item updir_path [required]
-
-File system path to upload storage directory. Should not include a trailing 
-slash.
-
-=item temp_dir 
-
-Optional file system path to temporary directory. Default is File::Spec->tmpdir(). 
-This temporary directory will also be used by gen_files during image transforms.
-
-=item dbh [required]
-
-DBI database handle. Required.
-
-=item query
-
-A CGI.pm-compatible object, used for the C<param> and C<upload> functions. 
-Defaults to CGI->new() if omitted.
-
-=item up_table
-
-Name of the SQL table where uploads are stored. See example syntax above or one
-of the creation scripts included in the distribution. Defaults to "uploads" if 
-omitted.
-
-=item up_table_map
-
-A hash reference which defines a mapping between the column names used in your 
-SQL table, and those that CGI::Uploader uses. The keys are the CGI::Uploader 
-default names. Values are the names that are actually used in your table.
-
-This is not required. It simply allows you to use custom column names.
-
-  upload_id       => 'upload_id',
-  mime_type       => 'mime_type',
-  extension       => 'extension',
-  width           => 'width',
-  height          => 'height',   
-  gen_from_id     => 'gen_from_id',
-  file_name       => 'file_name',   
-
-You may also define additional column names with a value of 'undef'. This feature
-is only useful if you override the C<extract_meta()> method or pass in
-C<$shared_meta> to store_uploads(). Values for these additional columns will
-then be stored by C<store_meta()> and retrieved with C<fk_meta()>.
-
-=item up_seq
-
-For Postgres only, the name of a sequence used to generate the upload_ids.
-Defaults to C<upload_id_seq> if omitted.
-
-=item file_scheme
-
- file_scheme => 'md5',
-
-C<file_scheme> controls how file files are stored on the file system. The default
-is C<simple>, which stores all the files in the same directory with names like 
-C<123.jpg>. Depending on your environment, this may be sufficient to store
-10,000 or more files.
-
-As an alternative, you can specify C<md5>, which will create three levels
-of directories based on the first three letters of the ID's md5 sum. The
-result may look like this:
-
- 2/0/2/123.jpg
-
-This should scale well to millions of files. If you want even more control,
-consider overriding the C<build_loc()> method, which is  used to return the
-stored file path.
-
-Note that specifying the file storage scheme for the file system is not related
-to the C<file_name> stored in the database, which is always the original uploaded
-file name.
-
-
-=back 
-
-=cut
-
-sub new {
-	my $proto = shift;
-	my $class = ref($proto) || $proto;
-	my %in = validate( @_, { 
-		updir_url    => { type => SCALAR },
-		updir_path   => { type => SCALAR },
-		dbh		     => 1,
-		up_table     => { 
-                          type => SCALAR,
-                          default=> 'uploads',
-        },
-        temp_dir   => {
-                type    => SCALAR,
-                default => File::Spec->tmpdir()
-        },
-        up_table_map => { 
-                          type    => HASHREF,
-                          default => {
-                              upload_id       => 'upload_id',
-                              mime_type       => 'mime_type',
-                              extension       => 'extension',
-                              width           => 'width',
-                              height          => 'height',   
-							  gen_from_id     => 'gen_from_id',
-#                              bytes      => 'bytes',
-                          }
-        },
-		up_seq      => { default => 'upload_id_seq'},
-		spec        => { type => HASHREF },
-		query	    => { optional => 1  } ,
-        file_scheme => {
-             regex   => qr/^simple|md5$/,
-             default => 'simple',
-        },
-
-	});
-	$in{db_driver} = $in{dbh}->{Driver}->{Name};
-    # Support PostgreSQL via ODBC
-    $in{db_driver} = 'Pg' if $in{dbh}->get_info(17) eq 'PostgreSQL';
-	unless (($in{db_driver} eq 'mysql') or ($in{db_driver} eq 'Pg') or ($in{db_driver} eq 'SQLite')) {
-		croak "only mysql, Pg and SQLite drivers are supported at this time. You are trying to use $in{db_driver}.";
-	}
-
-    unless ($in{query}) {
-        require CGI;
-        $in{query} = CGI->new; 
-    }
-
-	# Process the spec
-    for my $k (keys %{ $in{spec} }) {
-        # If the spec is an arrayref, that's a shorthand for specifying some gen_files.
-        if (ref $in{spec}->{$k} eq 'ARRAY') {
-            $in{spec}->{$k} = {
-                gen_files => $in{spec}->{$k},
-            };
-        }
-    }
-
-    # Fill in missing map values
-    for (keys %{ $in{up_table_map} }) {
-        $in{up_table_map}{$_} = $_ unless defined $in{up_table_map}{$_};
-    }
-
-    # keep pointer to input hash for easier re-use later
-    $in{input} =\%in;
-
-	my $self  = \%in;
-	bless ($self, $class);
-	return $self;
-}
-
-=head1 Basic Methods
-
-These basic methods are all you need to know to make effective use of this
-module. 
-
-=head2 store_uploads()
-
-  my $entity = $u->store_uploads($form_data);
-
-Stores uploaded files based on the definition given in C<spec>. 
-
-Specifically, it does the following:
-
-=over
-
-=item o
-
-possibily transforms the original file according to C<transform_method>
-
-=item o
-
-possibly generates additional files based on those uploaded, according to
-C<gen_files>.
-
-=item o
-
-stores all the files on the file system
-
-=item o
-
-inserts upload details into the database, including upload_id, 
-mime_type and extension. The columns 'width' and 'height' will be
-populated if that meta data is available.
+=item CGI
 
 =back
 
-As input, a hash reference of form data is expected. The simplest way 
-to get this is like this:
+If not provided, an object of type C<CGI> will be created and used to do the uploading.
 
- use CGI;
- my $q = new CGI; 
- $form_data = $q->Vars;
+If you want to use a different type of object, just ensure it has these CGI-compatible methods:
 
-However, I recommend that you validate your data with a module with
-L<Data::FormValidator|Data::FormValidator>, and use a hash reference
-of validated data, instead of directly using the CGI form data.
+=over 4
 
-CGI::Uploader is designed to handle uploads that are included as a part 
-of an add/edit form for an entity stored in a database. So, C<$form_data> 
-is expected to contain additional fields for this entity as well
-as the file upload fields.
+=item cgi_error()
 
-For this reason, the C<store_uploads> method returns a hash reference of the
-valid data with some transformations.  File upload fields will be removed from
-the hash, and corresponding "_id" fields will be added.
+This is only called if something goes wrong.
 
-So for a file upload field named 'img_field',  the 'img_field' key
-will be removed from the hash and 'img_field_id' will be added, with
-the appropriate upload ID as the value.
+=item upload()
 
-store_uploads takes an optional second argument as well:
+=item uploadInfo()
 
-  my $entity = $u->store_uploads($form_data,$shared_meta);
+=back
 
-This is a hash refeference of additional meta data that you want to store
-for all of the images you storing. For example, you may wish to store
-an "uploaded_user_id".
+I<Warning>: CGI::Simple cannot be supported. See this ticket, which is I<not> resolved:
 
-The keys should be column names that exist in your C<uploads> table. The values
-should be appropriate data for the column.  Only the key names defined by the
-C<up_table_map> in C<new()> will be used.  Other values in the hash will be
-ignored.
+http://rt.cpan.org/Ticket/Display.html?id=14838
 
-=cut 
+There is a comment in the source code of CGI::Simple about this issue. Search for 14838.
 
-sub store_uploads {
-	validate_pos(@_,1,1,0);
-	my $self        = shift;
-	my $form_data   = shift;
-    my $shared_meta = shift;
-	assert($form_data, 'store_uploads: input hashref missing');
+This key (query) is optional.
 
-	my $uploads = $self->{spec};
+=item temp_dir => $string
 
-	my %entity_all_extra;
-	for my $file_field (keys %$uploads) {
-        # If we have an uploaded file for this
-        my ($tmp_filename,$uploaded_mt,$file_name) = $self->upload($file_field);
-        if ($tmp_filename) {
-            my $id_to_update = $form_data->{$file_field.'_id'}; 
+Note the spelling of I<temp_dir>.
 
-            my %entity_upload_extra = $self->store_upload(
-                file_field    => $file_field,
-                src_file      => $tmp_filename,
-                uploaded_mt   => $uploaded_mt,
-                file_name     => $file_name,
-                shared_meta   => $shared_meta,  
-                id_to_update  => $id_to_update, 
-            );
+If not provided, an object of type C<File::Spec> will be created and its tmpdir() method called.
 
-            %entity_all_extra = (%entity_all_extra, %entity_upload_extra);
-		}
-	}
+This key (temp_dir) is optional.
 
-	# Now add and delete as needed
-	my $entity = { %$form_data, %entity_all_extra };
-	map { delete $entity->{$_} } keys %{ $self->{spec} };
-    # For good measure.
-    delete $entity->{''};
+=back
 
-    File::Temp::cleanup();
+=head1 Transformation 'v' Generation
 
-	return $entity;
-}
+I<Transform> is an optional component in the call to C<upload()>.
 
-=head2 delete_checked_uploads()
+C<Generate()> is a separate method.
 
- my @fk_col_names = $u->delete_checked_uploads;
+This section discusses these 2 processes.
 
-This method deletes all uploads and any generated files
-based on form input. Both files and meta data are removed.
+Tranformation:
 
-It looks through all the field names defined in C<spec>. For an upload named
-I<img_1>, a field named I<img_1_delete> is checked to see if it has a true
-value. 
+=over 4
 
-A list of the field names is returned, prepended with '_id', such as:
+=item You must specify a CGI form field
 
- img_1_id
+This means transformation takes exactly 1 input file.
 
-The expectation is that you have foreign keys with these names defined in
-another table. Having the names is format allows you to easily
-set these fields to NULL in a database update:
+=item The file is uploaded before being transformed
 
- map { $entity->{$_} = undef } @fk_names;
+=item The uploaded file is transformed and saved
 
-B<NOTE:> This method can not currently be used to delete a generated file by itself. 
+=item The uploaded file is discarded
 
-=cut 
+=item The transformed file's meta-data goes in the database
 
-sub delete_checked_uploads {
-	my $self = shift;
-	my $imgs = $self->{spec};
+This means transformation outputs exactly 1 file.
 
-    my $q = $self->{query};
-	my $map = $self->{up_table_map};
+=back
 
-	croak "missing gen_from_id in up_table_map"  unless $map->{gen_from_id};
+Generation:
 
+=over 4
 
-	my @to_delete;
+=item There is no upload associated with generation
 
- 	for my $file_field (keys %$imgs) {
-		if ($q->param($file_field.'_delete') ) {
-			my $upload_id = $q->param($file_field.'_id') || 
-				croak "$file_field was selected to delete, 
-					but ID was missing in '${file_field}_id' field";
+=item The file used as a basis for generation must be in the database
 
-			$self->delete_upload($upload_id);
-			
-			# Delete generated files  as well. 
-			my $gen_file_ids = $self->{dbh}->selectcol_arrayref(
-				"SELECT $map->{upload_id}
-					FROM $self->{up_table}
-					WHERE $map->{gen_from_id} = ?",{},$upload_id) || [];
+This means generation takes exactly 1 input file.
 
-			for my $gen_file_id (@$gen_file_ids) {
-				$self->delete_upload($gen_file_id);
-			}
+So this input file was, presumably, uploaded at some time in the past, and may have been
+transformed at that time.
 
-			push @to_delete, map {$_.'_id'} $self->spec_names($file_field) ; 
-		}
+=item You specify how to generate a new file based on an old file
 
-	}
+That is, you specify a set of options which control the generation of 1 new file.
 
-	return @to_delete;
-}
+=item You specify N >= 1 sets of such options
 
+This means generation outputs N >= 1 new files.
 
-=head2 fk_meta()
+=item The old file stays in the database
 
- my $href = $u->fk_meta(
- 	table    => $table,
-	where    => \%where,
-	prefixes => \@prefixes,
+=item All the generated files' meta-data go in the database.
 
-Returns a hash reference of information about the file, useful for 
-passing to a templating system. Here's an example of what the contents 
-of C<$href> might look like:
+=back
 
- {
-     file_1_id     => 523,
-     file_1_url    => 'http://localhost/images/uploads/523.pdf',
- }
+A typical use of generation would be to produce thumbnails of large images.
 
-If the files happen to be images and have their width and height
-defined in the database row, template variables will be made
-for these as well. 
+=head1 Method: delete(%hash)
 
-This is going to fetch the file information from the upload table for using the row 
-where news.item_id = 23 AND news.file_1_id = uploads.upload_id.
+Note: Methods are listed here in alphabetical order. So C<delete()> comes before C<upload()>.
+Nevertheless, the most detailed explanations of options are under C<upload()>, with only brief notes
+here under C<delete()>.
 
-This is going to fetch the file information from the upload table for using the row 
-where news.item_id = 23 AND news.file_1_id = uploads.upload_id.
+You must pass a hash to C<delete()>.
 
-The C<%where> hash mentioned here is a L<SQL::Abstract|SQL::Abstract> where clause. The
-complete SQL that used to fetch the data will be built like this:
+I<delete(%hash)> deletes everything associated with a given database table id.
 
- SELECT upload_id as id,width,height,extension 
-    FROM uploads, $table 
-    WHERE (upload_id = ${prefix}_id AND (%where_clause_expanded here));
+The keys of this hash are reserved words, and the values are your options.
 
-=cut 
-	
-sub fk_meta {
-    my $self = shift;
-    my %p = validate(@_,{
-        table    => { type => SCALAR },
-        where    => { type => HASHREF },
-        prefixes => { type => ARRAYREF },
-        prevent_browser_caching => { default => 1 }
-    });
+=over 4
 
+=item column_map => {...}
 
-	my $table = $p{table};
-	my $where = $p{where};
-	my @file_fields = @{ $p{prefixes} };
+See L<Details|/Details> for a discussion of I<column_map>.
 
-	my $DBH = $self->{dbh};
-	my %fields;
-	require SQL::Abstract;
-	my $sql = SQL::Abstract->new;
-	my ($stmt,@bind) = $sql->where($where);
-	
-	# We don't want the 'WHERE' word that SQL::Abstract adds
-	$stmt =~ s/^\s?WHERE//;
+Note: If your column map does not contain the I<server_file_name> key, C<delete(%hash)> will do nothing
+because it won't be able to find any file names to delete.
 
-	# XXX There is probably a more efficient way to get this data than using N selects
+The key (column_map) is optional.
 
-    # mysql uses non-standard quoting
-	my $qt = ($DBH->{Driver}->{Name} eq 'mysql') ? '`' : '"'; 
+=item dbh => $dbh
 
-    my $map = $self->{up_table_map};
+This key may be specified globally or in the call to C<delete()>.
 
-	for my $field (@file_fields) {
-		my $upload = $DBH->selectrow_hashref(qq!
-			SELECT * 
-				FROM !.$self->{up_table}.qq!, $table AS t
-                WHERE ($self->{up_table}.$map->{upload_id} = t.${qt}${field}_id${qt} and ($stmt) )!,
-				{},@bind);
+See L<Details|/Details> for an explanation, including how this key interacts with I<dsn>.
 
-            my %upload_fields = $self->transform_meta(
-                meta => $upload,
-                prevent_browser_caching => $p{prevent_browser_caching},
-                prefix => $field,
-            );
-           %fields = (%fields, %upload_fields);
+This key (dbh) is optional.
 
-	}
+=item dsn => [...]
 
-	return \%fields;
-}
+This key may be specified globally or in the call to C<delete()>.
 
-=head1 Class Methods
+See L<Details|/Details> for an explanation, including how this key interacts with I<dbh>.
 
-These are some handy class methods that you can use without the need to first create
-an object using C<new()>.
+This key (dsn) is optional.
 
-=head2 upload()
+=item id => $id
 
- # As a class method
- ($tmp_filename,$uploaded_mt,$file_name) = 
- 	CGI::Uplooader->upload('file_field',$q);
+This is the (primary) key of the database table which will be processed.
 
- # As an object method
- ($tmp_filename,$uploaded_mt,$file_name) = 
- 	$u->upload('file_field');
+To specify a column name other than I<id>, use the I<column_map> option.
 
-The function is responsible for actually uploading the file.
+This key (id) is mandatory.
 
-It can be called as a class method or an object method. As a class method, it's
-necessary to provide a query object as the second argument. As an object
-method, the query object given the constructor is used.
+=item table_name => $string
 
-Input: 
- - file field name
+This is the name of the database table.
 
-Output:
- - temporary file name
- - Uploaded MIME Type
- - Name of uploaded file (The value of the file form field)
+This key (table_name) is mandatory.
 
-Currently CGI.pm, CGI::Simple and Apache::Request and are supported. 
-
-=cut 
-
-sub upload {
-    my $self = shift;
-    my $file_field = shift;
-   my $q = shift || $self->{query};
-
-   my $fh;	
-   my $mt = '';
-   my $filename = $q->param($file_field);
+=back
 
-   if ($q->isa('CGI::Simple') ) {
-	   $fh = $q->upload($filename); 
-	   $mt = $q->upload_info($filename, 'mime' );
-
-	   if (!$fh && $q->cgi_error) {
-		   warn $q->cgi_error && return undef;
-	   }
-   }
-   elsif ( $q->isa('Apache::Request') ) {
-	    my $upload = $q->upload($file_field);
-		$fh = $upload->fh;
-		$mt = $upload->type;
-   }
-   # default to CGI.pm behavior
-   else {
-	   $fh = $q->upload($file_field);
-	   $mt = $q->uploadInfo($fh)->{'Content-Type'} if $q->uploadInfo($fh);
-
-	   if (!$fh && $q->cgi_error) {
-		   warn $q->cgi_error && return undef;
-	   }
-   }
-
-   return undef unless ($fh && $filename);
-
-   my ($tmp_fh, $tmp_filename) = tempfile('CGIuploaderXXXXX', UNLINK => 1, DIR => $self->{'temp_dir'} );
-
-   #   Determine whether binary mode is required in the handling of uploaded 
-   #   files - 
-   #   Binary mode is deemed to be required when we (the server) are running one one 
-   #   of these platforms: for Windows, OS/2 and VMS 
-   binmode($tmp_fh) if ($^O =~ /OS2|VMS|Win|DOS|Cygwin/i);
-
-   require File::Copy;
-   import  File::Copy;
-   copy($fh,$tmp_filename) || croak "upload: unable to create tmp file: $!";
-
-    return ($tmp_filename,$mt,$filename);
-}
-
-=head1 Upload Methods
-
-These methods are high level methods to manage the file and meta data parts of
-an upload, as well its generated files.  If you are doing something more
-complex or customized you may want to call or overide one of the below methods.
-
-=head2 store_upload()
-
- my %entity_upload_extra = $u->store_upload(
-    file_field    => $file_field,
-    src_file      => $tmp_filename,
-    uploaded_mt   => $uploaded_mt,
-    file_name     => $file_name,
-    shared_meta   => $shared_meta,  # optional
-    id_to_update  => $id_to_update, # optional
- );
-
-Does all the processing for a single upload, after it has been uploaded
-to a temp file already.
-
-It returns a hash of key/value pairs as described in L</store_uploads()>.
-
-=cut
-
-sub store_upload {
-    my $self = shift;
-    my %p = validate(@_, {
-            file_field    => { type => SCALAR },
-            src_file      => { type => SCALAR },
-            uploaded_mt   => { type => SCALAR },
-            file_name     => { type => SCALAR | GLOBREF },
-            shared_meta   => { type => HASHREF | UNDEF,    default => {} },
-            id_to_update  => { type => SCALAR | UNDEF, optional => 1 },
-        });
-
-    my (
-        $file_field,
-        $tmp_filename,
-        $uploaded_mt,
-        $file_name,
-        $shared_meta,
-        $id_to_update,
-    ) = ($p{file_field},$p{src_file},$p{uploaded_mt},$p{file_name},$p{shared_meta},$p{id_to_update});
-
-    # Transform file if needed
-    if (my $meth = $self->{spec}{$file_field}{transform_method}) {
-        $tmp_filename = $meth->( $self, 
-            $file_name,
-            $self->{spec}{$file_field}{params},
-        );
-    }
-
-    # XXX The uploaded mime type may have nothing to do with
-    # the current mime-type after it's transformed
-    my $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
-
-    $shared_meta ||= {};
-    my $all_meta = { %$meta, %$shared_meta };
-
-    my $id;
-    # If it's an update
-    if ($id = $id_to_update) {
-        # delete old generated files  before we create new ones
-        $self->delete_gen_files($id);
-
-        # It's necessary to delete the old file when updating, because 
-        # the new one may have a new extension. 
-        $self->delete_file($id);
-    }
-
-    # insert or update will be performed as appropriate. 
-    $id = $self->store_meta(
-        $file_field, 
-        $all_meta,
-        $id );
-
-    $self->store_file($file_field,$id,$meta->{extension},$tmp_filename);
-
-    my %ids = ();
-       %ids = $self->create_store_gen_files(
-      file_field  => $file_field,
-      meta        => $all_meta,
-      src_file    => $tmp_filename,
-      gen_from_id => $id,
-    );
-
-    return (%ids, $file_field.'_id' => $id);
-
-}
-
-=head2 create_store_gen_files() 
-
- my %gen_file_ids = $u->create_store_gen_files(
- 		file_field      => $file_field,
-		meta            => $meta_href,
-		src_file        => $tmp_filename,
-		gen_from_id => $gen_from_id,
-    );
-
-This method is responsible for creating and storing 
-any needed thumbnails.
-
-Input:
- - file_field: file field name
- - meta: a hash ref of meta data, as C<extract_meta> would produce 
- - src_file: path to temporary file of the file upload
- - gen_from_id: ID of upload that generated files  will be made from
-
-=cut
-
-sub create_store_gen_files {
-	my $self = shift;
-    my %p = validate(@_, {
-            file_field       => { type => SCALAR },
-            src_file         => { type => SCALAR },
-            meta             => { type => HASHREF | UNDEF,    default => {} },
-            gen_from_id  => { regex => qr/^\d*$/, },
-        });
-	my ($file_field,
-		$meta,
-		$tmp_filename,
-		$gen_from_id) = ($p{file_field},$p{meta},$p{src_file},$p{gen_from_id});
-
-    my $gen_fields_key = $self->{spec}{$file_field}{gen_files} || return undef;
-    my @gen_files = keys %{ $gen_fields_key }; 
-
-	my $gen_files = $self->{spec}{$file_field}{gen_files};
-	my $q = $self->{query};
-	my %out;
+There is no I<manager> key because there is no point in you passing all these options to C<delete(%hash)>
+just so this method can pass them all back to your manager.
 
-	my ($w,$h) = ($meta->{width},$meta->{height});
-	for my $gen_file (@gen_files) {
-        my $gen_tmp_filename;
+The items deleted are:
 
-        # tranform as needed
-        my $gen_file_key = $self->{spec}{$file_field}{gen_files}{$gen_file};
-        # Recommended code ref API
-        if (ref  $gen_file_key eq 'CODE') {
-            # It needed any params, they should already have been provided via closure.
-            $gen_tmp_filename = $gen_file_key->($self,$tmp_filename);
-        }
-        # Old, yucky hashref API 
-        elsif (ref $gen_file_key eq 'HASH') {
-            my $meth = $gen_file_key->{transform_method};
-            $gen_tmp_filename = $meth->(
-                $self,
-                $tmp_filename,
-                $gen_file_key->{params},
-            );
-        }
-        else {
-            croak "$gen_file for $file_field was not a hashref or code ref. Check spec syntax.";
-        }
+=over 4
 
-		# inherit mime-type and extension from parent
-        # but merge in updated details for this file
-        my $meta_from_gen_file = $self->extract_meta($gen_tmp_filename,$gen_file);
-           $meta_from_gen_file ||= {};
-		my %t_info =  (%$meta, gen_from_id => $gen_from_id, %$meta_from_gen_file);
+=item All files generated from the uploaded file
 
+They can be identified because their I<parent_id> column matches $id, and their file names come from the
+I<server_file_name> column.
 
+=item The records in the table whose I<parent_id> matches $id
 
-        # Try to get image dimensions (will fail safely for non-images)
-        #($t_info{width}, $t_info{height}) = imgsize($gen_tmp_filename);
-
-		# Insert		
-		my $id = $self->store_meta($gen_file, \%t_info );
-
-		# Add to output hash
-		$out{$gen_file.'_id'} = $id;
-
-        $self->store_file($gen_file,$id,$t_info{extension},$gen_tmp_filename);
-	}
-	return %out;
-}
-
-=head2 delete_upload()
-
-  $u->delete_upload($upload_id);
-
-This method is used to delete the meta data and file associated with an upload.
-Usually it's more convenient to use C<delete_checked_uploads> than to call this
-method directly.
-
-This method does not delete generated files for this upload. 
+=item The uploaded file
 
-=cut
+It can be identified becase its I<id> column matches $id, and its file name comes from the
+I<server_file_name> column.
 
-sub delete_upload {
-	my $self = shift;
-    my ($id) = @_;
+=item The record in the table whose I<id> matches $id
 
-    $self->delete_file($id);
-    $self->delete_meta($id);
+=back
 
-}
+C<delete(%hash)> returns an array ref of hashrefs.
 
-=head2 delete_gen_files()
+Each hashref has 2 keys and 2 values:
 
- $self->delete_gen_files($id);
-
-Delete the generated files  for a given file ID, from the file system and the database
-
-=cut
-
-sub delete_gen_files {
-    validate_pos(@_,1,1);
-    my ($self,$id) = @_;
-
-    my $dbh = $self->{dbh};
-    my $map = $self->{up_table_map};
-
-    my $gen_file_ids_aref = $dbh->selectcol_arrayref(
-        "SELECT   $map->{upload_id} 
-            FROM  ".$self->{up_table}. "
-            WHERE $map->{gen_from_id} = ?",{},$id) || [];
-
-    for my $gen_file_id (@$gen_file_ids_aref) {
-        $self->delete_file($gen_file_id);
-        $self->delete_meta($gen_file_id);
-    }
-
-}
-
-=head1 Meta-data Methods
-
-=head2 extract_meta() 
-
- $meta = $self->extract_meta($tmp_filename,$file_name,$uploaded_mt);
-
-This method extracts and returns the meta data about a file and returns it.
-
-Input:
-
- - Path to file to extract meta data from
- - the name of the file (as sent through the file upload file)
- - The mime-type of the file, as supplied by the browser
-
-Returns: a hash reference of meta data, following this example:
-
- {
-         mime_type => 'image/gif',
-         extension => '.gif',
-         bytes     => 60234,
-         file_name => 'happy.txt',
- 
-         # only for images
-         width     => 50,
-         height    => 50,
- }
-
-=cut 
-
-sub extract_meta {
-    validate_pos(@_,1,1,1,0);
-    my $self = shift;
-    my $tmp_filename = shift;
-    my $file_name = shift;
-    my $uploaded_mt = shift || '';
+=over 4
 
-    #   Determine and set the appropriate file system parsing routines for the 
-    #   uploaded path name based upon the HTTP client header information.
-    use HTTP::BrowserDetect;
-    my $client_os = $^O;
-    my $browser = HTTP::BrowserDetect->new;
-    $client_os = 'MSWin32' if $browser->windows;
-    $client_os = 'MacOS'   if $browser->mac;
-    $client_os = 'Unix'    if $browser->macosx;
-    require File::Basename;
-    File::Basename::fileparse_set_fstype($client_os);
-    $file_name = File::Basename::fileparse($file_name,[]);
+=item id => $id
 
+$id is the value of the (primary) key column of a deleted file.
 
-   require File::MMagic;	
-   my $mm = File::MMagic->new; 
+One of these $id values will be the $id you passed in to C<delete(%hash)>.
 
-   # If the uploaded  mime_type was not provided  calculate one from the file magic number
-   # if that does not exist, fall back on the file name
-   my $fm_mt = $mm->checktype_magic($tmp_filename);
-      $fm_mt = $mm->checktype_filename($tmp_filename) if (not length $fm_mt) ;
+=item file_name => $string
 
-   my $mt = ($uploaded_mt || $fm_mt);
-   assert($mt,'found mime type');
+$string is the name of a deleted file.
 
+=back
 
-   use MIME::Types;
-   my $mimetypes = MIME::Types->new;
-   my MIME::Type $t = $mimetypes->type($mt);
-   my @mt_exts = $t ? $t->extensions : undef;
+=head1 Method: generate(%hash)
 
-   my $ext;
+You must pass a hash to C<generate()>.
 
-   # figure out an extension
-   my ($uploaded_ext) = ($file_name =~ m/\.([\w\d]*)?$/);
+The keys to this hash are:
 
-   # If there is at least one MIME-type found
-   if ($mt_exts[0]) {
-   		# If the upload extension is one recognized by MIME::Type, use it.
-		if ((defined $uploaded_ext) 
-            and (grep {/^$uploaded_ext$/} @mt_exts)) {
-			$ext = $uploaded_ext;
-		}
-		# otherwise, use one from MIME::Type, just to be safe
-		else {
-			$ext = $mt_exts[0];
-		}
-   }
-   else {
-   	   # If is a provided extension but no MIME::Type extension, use that.
-	   # It's possible that there no extension uploaded or found)
-	   $ext = $uploaded_ext;
-   }
-
-   if ($ext) {
-        $ext = ".$ext" if $ext;
-   }
-   else {
-	   croak "no extension found for file name: $file_name";
-   }
-
-
-   # Now get the image dimensions if it's an image 
-    my ($width,$height) = imgsize($tmp_filename);
+=over 4
 
-    return {
-        file_name => $file_name,
-        mime_type => $mt, 
-        extension => $ext,
-        bytes     => (stat ($tmp_filename))[7],
-
-        # only for images
-        width     => $width,
-        height    => $height,
-    };
-    
+=item column_map => {...}
 
-}
+The default column_map is documented under L<Details|/Details>.
 
-=head2 store_meta()
+This key (column_map) is optional.
 
- my $id = $self->store_meta($file_field,$meta);  
+=item dbh => $dbh
 
-This function is used to store the meta data of a file upload.
+I<Dbh> is documented under L<Details|/Details>.
 
-Input: 
+At least one of I<dbh> and I<dsn> must be provided.
 
- - file field name
+=item dsn => [...]
 
- - A hashref of key/value pairs to be stored. Only the key names defined by the
-   C<up_table_map> in C<new()> will be used. Other values in the hash will be
-   ignored.
+I<Dbh> is documented under L<Details|/Details>.
 
- - Optionally, an upload ID can be passed, causing an 'Update' to happen instead of an 'Insert' 
+At least one of I<dbh> and I<dsn> must be provided.
 
-Output:
-  - The id of the file stored. The id is generated by store_meta(). 
+=item file_scheme => $string
 
-=cut
+I<file_scheme> is documented under L<Details|/Details>.
 
-sub store_meta {
-    validate_pos(@_,1,1,1,0);
-	my $self = shift;
+I<File_scheme> defaults to I<string>.
 
-    # Right now we don't use the the file field name
-    # It seems like a good idea to have in case you want to sub-class it, though. 
-    my $file_field  = shift;
-	my $href = shift;
-	my $id = shift;
+This key (file_scheme) is optional.
 
-	my $DBH = $self->{dbh};
+=item manager => $obj
 
-	require SQL::Abstract;
-	my $sql = SQL::Abstract->new;
-    my $map = $self->{up_table_map};
-    my %copy = %$href;
+I<Manager> is documented under L<Details|/Details>.
 
-    my $is_update = 1 if $id;
+This key (manager) is optional.
 
-    if (!$is_update && $self->{db_driver} eq 'Pg') {
-        $id = $DBH->selectrow_array("SELECT NEXTVAL('".$self->{up_seq}."')");
-        $copy{upload_id} = $id;
-    }
+=item path => $string
 
-    my @orig_keys = keys %copy;
-    for (@orig_keys) {
-        if (exists $map->{$_}) {
-            # We're done if the names are the same
-            next if ($_ eq $map->{$_});
+I<Path> is documented under L<Details|/Details>.
 
-            # Replace each key name with the mapped name
-            $copy{ $map->{$_} } = $copy{$_};
+This key (path) is mandatory.
 
-        }
-        # The original field is now duplicated in the hash or unknown.
-        # delete in either case. 
-        delete $copy{$_};
-    }
+=item records => {...}
 
-    my ($stmt,@bind); 
-    if ($is_update) {
-     ($stmt,@bind)   = $sql->update($self->{up_table},\%copy, { $map->{upload_id} => $id });
-    }
-    else {
-     ($stmt,@bind)   = $sql->insert($self->{up_table},\%copy);
-    }
+I<Records> specifies which (primary) keys in the table are used to find files to process.
 
-    $DBH->do($stmt,{},@bind);
-    if (!$is_update && $self->{db_driver} eq 'mysql') {
-        $id = $DBH->{'mysql_insertid'};
-    }
-    if (!$is_update && $self->{db_driver} eq 'SQLite') {
-      $id = $DBH->func('last_insert_rowid')
-    }
+These files are input files, and the options in the hashref specify how to use those files
+to generate output files.
 
-	return $id;
-}
+The keys in the hashref are the keys in the table. E.g.:
 
-=head2 delete_meta()
+	records => {1 => [...], 99 => [...]}
 
- my $dbi_rv = $self->delete_meta($id);
+specifies that only records with ids of 1 and 99 are to be processed.
 
-Deletes the meta data for a file and returns the DBI return value for this operation.
+The name of the (primary) key column defaults to I<id>, but you can use I<column_map> to change that.
 
-=cut
+The name of the input file comes from the I<server_file_name> column of the table. Use I<column_map>
+to change that column name.
 
-sub delete_meta {
-    validate_pos(@_,1,1);
-    my $self = shift;
-    my $id = shift;
+The arrayrefs are used to specify N >= 1 output files for each input file.
 
-	my $DBH = $self->{dbh};
-    my $map = $self->{up_table_map};
+So, each arrayref contains N >= 1 hashrefs, and each hashref specifies how to generate 1 output file. E.g.:
 
-   return $DBH->do("DELETE from ".$self->{up_table}." WHERE $map->{upload_id} = $id");
+	records => {1 => [{...}, {...}], 99 => [{...}]}
 
-}
+This says use id 1 to generate 2 output files, and use id 99 to generate 1 output file.
 
-=head2 transform_meta()
+To make life easier, if you only wish to generate a single output file, you can reduce this:
 
- my %meta_to_display = $u->transform_meta(
-		meta   => $meta_from_db,
-		prefix => 'my_field',
-		prevent_browser_caching => 0,
-		fields => [qw/id url width height/],
+	records => {99 => [{...}]}
+
+to this:
+
+	records => {99 => {...} }
+
+The structure of the inner-most hashrefs is exactly the same as the hashrefs pointed to by the
+<transform> key, documented at L</transform>. E.g.:
+
+For an I<imager> object of type C<Image::Magick>:
+
+	records => {1 => [{imager => $obj, options => {width => $w, height => $h} }, {...}], 99 => [{...}]}
+
+or, for an I<imager> object of type C<Imager>:
+
+	records => {1 => [{imager => $obj, options => {xpixels => $x, ypixels => $y}, {...}], 99 => [{...}]}
+
+C<CGI::Uploader> takes care of the I<meta-data> for each generated file. See L<Meta-data|/Meta-data>.
+
+This key (records) is mandatory.
+
+=item sequence_name => $string
+
+I<Sequence_name> is documented under L<Details|/Details>.
+
+This key is mandatory if you are using Postgres, and optional if not.
+
+=item table_name => $string
+
+This key (table_name) is mandatory.
+
+=back
+
+Note: C<generate()> returns an hashref of arrayrefs, where the keys of the hashref are the ids
+provided in the I<records> hashref, and the arrayrefs list the ids of the files generated.
+
+You can use this data, e.g., to read the meta-data from the database and populate form fields to
+inform the user of the results of the generation process.
+
+=head1 Method: upload(%hash)
+
+You must pass a hash to C<upload()>.
+
+The keys of this hash are CGI form field names (where the fields are of type I<file>).
+
+C<CGI::Uploader> cycles thru these keys, using each one in turn to drive a single upload.
+
+Note: C<upload()> returns an arrayref of hashrefs, one hashref for each uploaded file stored.
+
+The hashrefs returned are not the I<meta-data> associated with each uploaded file, but more like status reports.
+
+These status reports are explained here, and the I<meta-data> is explained in the next section.
+
+The structure of these status hashrefs is 2 keys and 2 values:
+
+=over 4
+
+=item I<field> => CGI form field name
+
+=item I<id>    => The value of the id column in the database
+
+=back
+
+You can use this data, e.g., to read the meta-data from the database and populate form fields to
+inform the user of the results of the upload.
+
+=head1 Meta-data
+
+I<Meta-data> associated with each uploaded file is accumulated while I<upload()> works.
+
+Meta-data is a hashref, with these keys:
+
+=over 4
+
+=item client_file_name
+
+The client_file_name is the name supplied by the web client to C<CGI::Uploader>. It may
+I<or may not> have path information prepended, depending on the web client.
+
+=item date_stamp
+
+This value is the string 'now()', until the meta-data is saved in the database.
+
+At that time, the value of the function I<now()> is stored, except for SQLite, which just stores
+the string 'now()'.
+
+I<Date_stamp> has an underscore in it in case your database regards datastamp as a reserved word.
+
+=item extension
+
+This is provided by the C<File::Basename> module.
+
+The extension is a string I<without> the leading dot.
+
+If an extension cannot be determined, the value will be '', the empty string.
+
+=item height
+
+This is provided by the I<Image::Size> module, if it recognizes the type of the file.
+
+For non-image files, the value will be 0.
+
+=item id
+
+The id is (presumably) the primary key of your table.
+
+This value is 0 until the meta-data is saved in the database.
+
+In the case of Postgres, it will be populated by the sequence named with the I<sequence_name> key.
+
+=item mime_type
+
+This is provided by the I<MIME::Types> module, if it can determine the type.
+
+If not, it is '', the empty string.
+
+=item parent_id
+
+This is populated when a file is generated from the uploaded file. It's value will be the id of
+the upload file's record.
+
+For the uploaded file itself, the value will be 0.
+
+=item server_file_name
+
+The server_file_name is the name under which the file is finally stored on the file system
+of the web server. It is not the temporary file name used during the upload process.
+
+=item size
+
+This is the size in bytes of the uploaded file.
+
+=item width
+
+This is detrmined by the I<Image::Size> module, if it recognizes the type of the file.
+
+For non-image files, the value will be 0.
+
+=back
+
+=head1 Processing Steps
+
+A mini-synopsis:
+
+	$u -> upload
+	(
+	file_name_1 =>
+	[
+	{First set of storage options for this file},
+	{Second set of storage options for the same file},
+	{...},
+	],
 	);
 
-Prepares meta data from the database for display. 
+=over 4
 
+=item Upload file
 
-Input:
- - meta:   A hashref, as might be returned from "SELECT * FROM uploads WHERE upload_id = ?"
+C<upload()> calls C<do_upload()> to do the work of uploading the caller's file to a temporary file.
 
- - prefix: the resulting hashref keys will be prefixed with this,
-   adding an underscore as well.
+This is done once, whereas the following steps are done once for each hashref of storage options
+you specify in the arrayref pointed to by the 'current' CGI form field's name.
 
- - prevent_browse_caching: If set to true, a random query string  
-   will be added, preventing browsings from caching the image. This is very
-   useful when displaying an image an 'update' page. Defaults to true.
+C<do_upload()> returns a hashref of meta-data associated with the file.
 
- - fields: An arrayef of fields to format. The values here must be
-   keys in the C<up_table_map>. Two field names are special. 'C<id> is
-   used to denote the upload_id. C<url> combines several fields into
-   a URL to link to the upload. 
+=item Transform the file
 
-Output:   
- - A formatted hash. 
- 
-See L</fk_meta()> for example output. 
+If requested, call C<do_transform()>.
 
-=cut
+=item Save the meta-data
 
-sub transform_meta  {
-    my $self = shift;
-    my %p = validate(@_, {
-        meta   => { type => HASHREF },
-        prefix => { type => SCALAR  },
-        prevent_browser_caching => { default => 1 },
-        fields => { type => ARRAYREF ,
-                    default => [qw/id url width height/], 
-                },
-        });
-#	return undef unless (ref $p{meta} eq 'HASH');
+C<upload()> calls the C<do_insert()> method on the manager object to insert the meta-data into the
+database.
 
-    my $map = $self->{up_table_map};
+The default manager is C<CGI::Uploader> itself.
 
-    my %result;
+C<do_insert()> saves the I<last insert id> from that insert in the meta-data hashref.
 
-    my $qs;
-    if ($p{prevent_browser_caching})  {
-        # a random number to defeat image caching. We may want to change this later.
-        my $rand = (int rand 100);
-        $qs = "?$rand";
-    }
+=item Create the permanent file
 
-    my %fields = map { $_ => 1 } @{ $p{fields} }; 
+C<upload()> calls C<copy_temp_file()> to save the file permanently.
 
-    if ($fields{url}) {
-        $result{$p{prefix}.'_url'} = $self->{updir_url}.'/'.
-            $self->build_loc(
-                $p{meta}{ $map->{upload_id} }
-               ,$p{meta}{ $map->{extension} })
-               .$qs ;
-        delete $fields{url};
-    }
+C<copy_temp_file()> saves the permanent file name in the meta-data hashref.
 
-    if (exists $fields{id}) {
-        $result{$p{prefix}.'_id'} = $p{meta}->{ $map->{upload_id} };
-        delete $fields{id};
-    }
+=item Determine the height and width of images
 
-    for my $k (keys %fields) {
-        my $v = $p{meta}->{ $map->{$k} };
-        $result{$p{prefix}.'_'.$k} = $v if defined $v;
-    }
+C<upload()> calls the C<get_size()> method to get the image size, which delegates the work to C<Image::Size>.
 
-    return %result;
+C<get_size()> saves the image's dimensions in the meta-data hashref.
 
+=item Update the database with the permanent file's name and image size
 
-}
+C<upload()> calls the C<do_update()> method on the manager object to put the permanent file's name
+into the database record, along with the height and width.
 
-=head2 get_meta()
+=back
 
- my $meta_href = $self->get_meta($id);
+=head2 Details
 
-Returns a hashref of data stored in the uploads database table for the requested file id.
+Each key in the hash passed in to C<upload()> points to an arrayref of options which specifies how to process the
+form field.
 
-=cut
+Use multiple elements in the arrayref to store multiple sets of meta-data, all based on the same uploaded file.
 
-sub get_meta {
-  validate_pos(@_,1,1);
-  my ($self,$id) = @_;
+Each hashref contains 1 .. 5 of the following keys:
 
-  my $map = $self->{up_table_map};
-  return  $self->{dbh}->selectrow_hashref("
-            SELECT * FROM $self->{up_table} 
-                WHERE $map->{upload_id} = ?",{},$id);
-}
+=over 4
 
+=item column_map => {...}
 
+This hashref maps column_names used by C<CGI::Uploader> to column names used by your database table.
 
-=head1 File Methods
+The default column_map is:
 
-=head2 store_file()
-
- $self->store_file($file_field,$tmp_file,$id,$ext);
-
-Stores an upload file or dies if there is an error.
-
-Input:
-  - file field name
-  - path to tmp file for uploaded image
-  - file id, as generated by C<store_meta()>
-  - file extension, as discovered by L<extract_meta()>
-
-Output: none
-
-=cut
-
-sub store_file {
-    validate_pos(@_,1,1,1,1,1);
-    my $self = shift;
-    my ($file_field,$id,$ext,$tmp_file) = @_;
-    assert($ext, 'have extension');
-    assert($id,'have id');
-    assert(-f $tmp_file,'tmp file exists');
-    assert(-d $self->{updir_path},'updir_path is a directory');
-    assert(-w $self->{updir_path},'updir_path is writeable');
-
-    require File::Copy;
-    import File::Copy;
-    copy($tmp_file, File::Spec->catdir($self->{updir_path},$self->build_loc($id,$ext)) )
-    || croak "Unexpected error occured when uploading the image: $!";
-
-}
-
-=head2 delete_file()
-
- $self->delete_file($id);
-
-Call from within C<delete_upload>, this routine deletes the actual file.
-Dont' delete the the meta data first, you may need it build the path name
-of the file to delete.
-
-=cut
-
-sub delete_file {
-    validate_pos(@_,1,1);
-    my $self = shift;
-    my $id   = shift;
-
-    my $map = $self->{up_table_map};
-    my $dbh = $self->{dbh};
-
-    my $ext = $dbh->selectrow_array("
-        SELECT $map->{extension}
-            FROM $self->{up_table}
-            WHERE $map->{upload_id} = ?",{},$id);
-    $ext || croak "found no extension in meta data for ID $id. Deleting file failed.";
-
-
-    my $file = $self->{updir_path}.'/'.$self->build_loc($id,$ext);
-
-    if (-e $file) {  
-        unlink $file || croak "couldn't delete upload  file: $file:  $!";
-    }
-    else {
-        warn "file to delete not found: $file";
-    }
-
-}
-
-=head1 Utility Methods
-
-=head2 build_loc()
-
- my $up_loc = $self->build_loc($id,$ext);
-
-Builds a path to access a single upload, relative to C<updir_path>.  
-This is used to both file-system and URL access. Also see the C<file_scheme> 
-option to C<new()>, which affects it's behavior. 
-
-=cut
-
-sub build_loc {
-    validate_pos(@_,1,1,0);
-    my ($self,$id,$ext) = @_;
-
-    my $scheme = $self->{file_scheme};
-
-    my $loc;
-    if ($scheme eq 'simple') {
-        $loc = "$id$ext";
-    }     
-    elsif ($scheme eq 'md5') {
-        require Digest::MD5;
-        import Digest::MD5 qw/md5_hex/;
-        my $md5_path = md5_hex($id);
-        $md5_path =~ s|^(.)(.)(.).*|$1/$2/$3|;
-
-        my $full_path = $self->{updir_path}.'/'.$md5_path;
-        unless (-e $full_path) {
-            mkpath($full_path);
-        }
-
-        $loc = "$md5_path/$id$ext";
-    }
-}
-
-=head2 upload_field_names()
-
- # As a class method
- (@file_field_names) = CGI::Uploader->upload_field_names($q);
-
- # As an object method
- (@file_field_names) = $u->upload_field_names();
-
-Returns the names of all form fields which contain file uploads. Empty 
-file upload fields may be excluded.
-
-This can be useful for auto-generating a C<spec>.
-
-Input:
- - A query object is required as  input only when called as a class method.
-
-Output:
- - an array of the file upload field names.
-
-=cut
-
-sub upload_field_names {
-	my $self = shift;
-	my $q = shift || $self->{query};
-
-	my @file_field_names;
-	if ( $q->isa('CGI::Simple') ) {
-		my @list_of_files   = $q->upload;
-		my @all_field_names = $q->param();
-		for my $field (@all_field_names) {
-			my $potential_file_name = $q->param($field);
-			push @file_field_names, $field , if grep {m/^$potential_file_name/} @list_of_files;
-		}
-	}
-	elsif ($q->isa('Apache::Request') ) {
-		@file_field_names = map { $_->name } @{ $q->upload() };
-	}
-	# default to CGI.pm behavior
-	else  {
-		my @all_field_names = $q->param();
-		for my $field (@all_field_names) {
-			push @file_field_names, $field , if $q->upload($field);
-		}
+	{
+	client_file_name => 'client_file_name',
+	date_stamp       => 'date_stamp',
+	extension        => 'extension',
+	height           => 'height',
+	id               => 'id',
+	mime_type        => 'mime_type',
+	parent_id        => 'parent_id',
+	server_file_name => 'server_file_name',
+	size             => 'size',
+	width            => 'width',
 	}
 
-	return @file_field_names;
+If you supply a different column map, the values on the right-hand side are the ones you change.
 
-}
+Points to note:
 
+=over 4
 
+=item Omitting keys
 
+If you omit any keys from your map, the corresponding meta-data will not be saved.
 
+=back
 
+This key (column_map) is optional.
 
-=head2 spec_names()
+=item dbh => $dbh
 
- $spec_names = $u->spec_names('file_field'):
+This is a database handle for use by the default manager class (which is just C<CGI::Uploader>)
+discussed below, under I<manager>.
 
-With no arguments, returns an array of all the upload names defined in the
-spec, including any generated file names.
+This key is optional if you use the I<manager> key, since in that case you do anything in your own
+storage manager code.
 
-With one argument, a file field from the spec, can also be provided. It then returns
-that name as well as the names of any related generated files.
+If you do provide the I<dbh> key, it is passed in to your manager just in case you need it.
+
+Also, if you provide I<dbh>, the I<dsn> key, below, is ignored.
+
+If you do not provide the I<dbh> key, the default manager uses the I<dsn> arrayref to create a
+dbh via C<DBI>.
+
+=item dsn => [...]
+
+This key is optional if you use the I<manager> key, since in that case you do anything in your own
+storage manager code.
+
+If you do provide the I<dsn> key, it is passed in to your manager just in case you need it.
+
+Using the default I<manager>, this key is ignored if you provide a I<dbh> key, but it is mandatory
+when you do not provide a I<dbh> key.
+
+The elements in the arrayref are:
+
+=over 4
+
+=item A connection string
+
+E.g.: 'dbi:Pg:dbname=test'
+
+This element is mandatory.
+
+=item A username string
+
+This element is mandatory, even if it's just the empty string.
+
+=item A password string
+
+This element is mandatory, even if it's just the empty string.
+
+=item A connection attributes hashref
+
+This element is optional.
+
+=back
+
+The default manager class calls DBI -> connect(@$dsn) to connect to the database, i.e. in order
+to generate a I<dbh>, when you don't provide a I<dbh> key.
+
+=item file_scheme => $string
+
+I<File_scheme> controls how files are stored on the web server's file system.
+
+All files are stored in the directory specified by the I<path> option.
+
+Each file name has the appropriate extension appended (as determined by C<MIME::Types>.
+
+The possible values of I<file_scheme> are:
+
+=over 4
+
+=item md5
+
+The file name is determined like this:
+
+=over 4
+
+=item Digest::MD5
+
+Use the (primary key) I<id> (returned by storing the meta-data in the database) to seed
+the Digest::MD5 module.
+
+=item Create 3 subdirectories
+
+Use the first 3 digits of the hex digest of the id to generate 3 levels of sub-directories.
+
+=item Add the name
+
+The file name is the (primary key) I<id>.
+
+=back
+
+=item simple
+
+The file name is the (primary key) I<id>.
+
+I<Simple> is the default.
+
+=back
+
+This key (file_scheme) is optional.
+
+=item manager => $object
+
+This is an instance of your class which will manage the transfer of meta-data to a database table.
+
+In the case you provide the I<manager> key, your object is responsible for saving (or discarding!) the meta-data.
+
+If you provide an object here, C<CGI::Uploader> will call
+$object => do_insert($field_name, $meta_data, $store_option).
+
+Parameters are:
+
+=over 4
+
+=item $field_name
+
+I<$field_name> will be the 'current' CGI form field.
+
+Remember, I<upload()> is iterating over all your CGI form field parameters at this point.
+
+=item $meta_data
+
+I<$meta_data> will be a hashref of options generated by the uploading process
+
+See L<Meta-data|/Meta-data>, for the definition of meta-data.
+
+=item $store_option
+
+I<$store_option> will be the 'current' hashref of storage options, one of the arrayref elements
+associated with the 'current' form field.
+
+=back
+
+If you do not provide the I<manager> key, C<CGI::Uploader> will do the work itself.
+
+Later, C<CGI::Uploader> will call $object => do_update($field_name, $meta_data, $store_option),
+as explained above, under I<Processing Steps>.
+
+This key (manager) is optional.
+
+=item path => $string
+
+This is a path on the web server's file system where a permanent copy of the uploaded file will be saved.
+
+This key (path) is mandatory.
+
+=item sequence_name => $string
+
+This is the name of the sequence used to generate values for the primary key of the table.
+
+You would normally only need this when using Postgres.
+
+This key is optional if you use the I<manager> key, since in that case you can do anything in your own
+storage manager code. If you do provide the I<sequence_name> key, it is passed in to your manager
+just in case you need it.
+
+This key is mandatory if you use Postgres and do not use the I<manager> key, since without the I<manager> key,
+I<sequence_name> must be passed in to the default manager (C<CGI::Uploader>).
+
+=item table_name => $string
+
+This is the name of the table into which to store the meta-data.
+
+This key is optional if you use the I<manager> key, since in that case you can do anything in your own
+storage manager code. If you do provide the I<table_name> key, it is passed in to your manager
+just in case you need it.
+
+This key is mandatory if you do not use the I<manager> key, since without the I<manager> key,
+I<table_name> must be passed in to the default manager (C<CGI::Uploader>).
+
+=item transform => {...}
+
+This key points to a set of options which are used to transform the uploaded file.
+
+As stated above, transformation takes 1 input file, uploads it, transforms it, saves the transformed
+file, and discards the uploaded file.
+
+See also C<generate()>, for a completely different way of processing files.
+
+Here are the 2 examples I used in testing, but not at the same time!
+
+	 transform =>
+	 {
+		 imager  => Image::Magick -> new(), # Optional. Default.
+		 options => {height => 400, width => 500},
+	 }
+
+	 transform =>
+	 {
+		 imager  => Imager -> new(),
+		 options => {xpixels => 400, ypixels => 500},
+	 }
+
+Clearly, I<transform> points to a hashref:
+
+=over 4
+
+=item imager => $obj
+
+The I<imager> key is optional. If omitted, C<CGI::Uploader> creates an object of type C<Image::Magick>,
+and uses that.
+
+You can pass in an object whose class is a descendent of C<Image::Magick> or C<Imager>.
+
+They are treated differently, as explained next.
+
+=item height => 'Int', width => 'Int'
+
+If the $obj isa('Image::Magick') you must pass in at least 1 of I<height> and I<width>.
+
+The missing one is calculated from the size of the input image and the given parameter.
+
+Here's what happens:
+
+	if ($$option{'imager'} -> isa('Image::Magick') )
+	{
+		my($result)     = $$option{'imager'} -> Read($old_file_name);
+		my($dimensions) = $self -> calculate_dimensions($$option{'imager'}, $option);
+		$result         = $$option{'imager'} -> Resize($dimensions);
+		$result         = $$option{'imager'} -> Write($temp_file_name);
+	}
+
+Note: C<calculate_dimensions()> calls Get('width', 'height').
+
+This means if you wish to intercept these calls with a custom object, your C<Image::Magick>-based object must respond to
+these calls:
+
+=over 4
+
+=item Get()
+
+=item Read()
+
+=item Resize()
+
+=item Write()
+
+=back
+
+=item options => {xpixels => 400, ypixels => 500}
+
+If the $obj isa('Imager') you must pass in suitable parameters for C<Imager's> C<scale()> method.
+
+Any such parameters are acceptable. I just used I<xpixels> and I<ypixels> during testing.
+
+Here's what happens:
+
+	if ($$option{'imager'} -> isa('Imager') )
+	{
+		my($result)     = $$option{'imager'} -> read(file => $old_file_name, type => $$meta_data{'extension'});
+		my($new_image)  = $$option{'imager'} -> scale(%{$$option{'options'} });
+		my($extension)  = $$meta_data{'extension'};
+		$extension      = $extension ? ".$extension" : '';
+		$temp_file_name = "$temp_file_name$extension";
+		$result         = $new_image -> write(file => $temp_file_name, type => $$meta_data{'extension'});
+	}
+
+So, to intercept these calls, a descendent of C<Imager> must respond to these calls:
+
+=over 4
+
+=item read()
+
+=item scale()
+
+=item write()
+
+=back
+
+=back
+
+This key (transform) is optional.
+
+=back
+
+=head1 Sample Code
+
+Most of the features in C<CGI::Uploader> are demonstrated in samples shipped with the distro:
+
+=over 4
+
+=item Config data
+
+Patch lib/CGI/Uploader/.ht.cgi.uploader.conf as desired.
+
+This is used by C<CGI::Uploader::Config> and hence by C<CGI::Uploader::Test>.
+
+=item CGI forms
+
+Copy the directory htdocs/uploads/ to the doc root of your web server.
+
+=item CGI scripts
+
+Copy the files in cgi-bin/ to your cgi-bin directory.
+
+As explained above, don't expect use.cgi.simple.pl to work.
+
+Also, use.cgi.uploader.v2.pl will not run if you have installed V 3 over the top of V 2.
+
+=item Run the CGI scripts
+
+Point your web client at:
+
+=over 4
+
+=item /cgi-bin/use.cgi.pl
+
+=item /cgi-bin/use.cgi.uploader.v3 pl
+
+=back
+
+You can enter 1 or 2 file names in each CGI form.
+
+The code executed is actually in C<CGI::Uploader::Test>.
+
+See the method I<use_cgi_uploader_v3()> in that module for one way of utilizing the data returned by
+C<upload()>.
+
+=item Command line scripts
+
+The scripts/ directory contains various sample programs.
+
+In particular, see scripts/test.generate.pl.
+
+Note: to run this program you will have already uploaded one or more files, and Apache will have created
+a directory structure according to your I<path> option, and will own that path.
+
+So, you may need to use sudo to run scripts/test.generate.pl, since it will write temporary files to
+the same path.
+
+=back
+
+=head1 Modules Used and Required
+
+Both Build.PL and Makefile.PL list the modules used by C<CGI::Uploader>.
+
+Further to those, user options can trigger the use of these modules:
+
+=over 4
+
+=item Config::IniFiles
+
+If you use C<CGI::Uploader::Test>, it uses C<CGI::Uploader::Config>, which uses C<Config::IniFiles>.
+
+=item DBD::Pg
+
+I used Postgres when writing and testing V 3, and hence I used C<DBD::Pg>.
+
+Examine lib/CGI/Uploader/.ht.cgi.uploader.conf for details. This file is read in by C<CGI::Uploader::Config>.
+
+=item DBD::SQLite
+
+A quick test with SQLite worked, too.
+
+The test only requires changing .ht.cgi.uploader.conf and re-running scripts/create.table.pl. E.g.:
+
+	dsn=dbi:SQLite:dbname=/tmp/test
+	password=
+	table_name=uploads
+	username=
+
+Also, after running scripts/create.table.pl, use 'chmod a+w /tmp/test' so that the Apache daemon can
+write to the database.
+
+One last thing. SQLite does not interpret the function I<now()>; it just puts that string in the I<date_stamp>
+column. Oh, well.
+
+=item DBI
+
+If you do not specify a I<manager> object, C<CGI::Uploader> uses C<DBI>.
+
+=item DBIx::Admin::CreateTable
+
+If you use C<CGI::Uploader::Test> to create the table, via scripts/create.table.pl, you'll need
+C<DBIx::Admin::CreateTable>.
+
+=item Digest::MD5
+
+If you set the I<file_scheme> option to I<md5>, you'll need C<Digest::MD5>.
+
+=item HTML::Template
+
+If you want to run any of the test scripts in cgi-bin/, you'll need C<HTML::Template>.
+
+=item Image::Magick
+
+If you specify the I<transform> option without the I<imager> option, C<CGI::Uploader> uses C<Imager::Magick>.
+
+=back
+
+=head1 FAQ
+
+=over 4
+
+=item Specifying the file name on the server
+
+This feature is not provided, for various reasons.
+
+One problem is sabotage.
+
+Another problem is users specifying characters which are illegal in file names on the server.
+
+In other words, this feature was considered and rejected.
+
+=item API changes from V 2 to V 3
+
+API changes between V 2 and V 3 are obviously enormous. A direct comparison doesn't make much sense.
+
+However, here are some things to watch out for:
+
+=over 4
+
+=item Various columns have different (default) names
+
+=item Default file extension
+
+Under V 2, a file called 'x' would be saved by force with a name of 'x.bin'.
+
+V 3 does not change file names, so 'x' will be stored in the database as 'x'.
+
+=item The dot in the file extension
+
+Under V 2, a file called 'x.png' would have '.png' stored in the extension column of the database.
+
+V 3 only stores 'png'.
+
+=item The id of the last record inserted
+
+Under V 2, various mechanisms were used to retrieve this value.
+
+V 3 calls $dbh -> last_insert_id(), unless of course you've circumvented this by supplying your own
+I<manager> object.
+
+=item The file name on the server
+
+Under V 2, the permanent file name was not stored as part of the meta-data.
+
+V 3 stores this information.
+
+=item Datestamps
+
+Under V 2, the datestamp of when the file was uploaded was not saved.
+
+V 3 stores this information.
+
+=item How come there is no update option like there was in V 2?
+
+Errr, it's been renamed to C<delete()> and C<upload()>.
+
+=back
+
+=back
+
+=head1 Changes
+
+See Changes and Changelog.ini. The latter is machine-readable, using Module::Metadata::Changes.
+
+=head1 Public Repository
+
+V 3 is available from github: git:github.com/ronsavage/cgi--uploader.git
+
+=head1 Authors
+
+V 2 was written by Mark Stosberg <mark@summersault.com>.
+
+V 3 was written by Ron Savage <ron@savage.net.au>.
+
+Ron's home page: http://savage.net.au/index.html
+
+=head1 Licence
+
+Artistic.
 
 =cut
-
-sub spec_names {
- 	my $self = shift;
-	my $spec_key = shift;
-
- 	my $all_keys = $self->{spec};
-
-    # only use $spec_key if it was passed in
-	my @primary_spec_keys_to_use  =  (defined $spec_key) ? $spec_key  : keys %$all_keys;
- 
-    my @gen_files = @primary_spec_keys_to_use, 
-        map { keys %{ $all_keys->{$_}{gen_files} } } @primary_spec_keys_to_use; 
-}
-
-1;
-__END__
-
-=head1 Contributing
-
-Patches, questions and feedback are welcome. I maintain CGI::Uploader using
-darcs, a CVS alternative ( http://www.darcs.net/ ). My darcs archive is here:
-http://mark.stosberg.com/darcs_hive/uploader/
-
-=head1 Author
-
-Mark Stosberg <mark@summersault.com>
-
-=head1 Thanks
-
-A special thanks to David Manura for his detailed and persistent feedback in 
-the early days, when the documentation was wild and rough.
-
-Barbie, for the first patch. 
-
-=head1 License
-
-This program is free software; you can redistribute it and/or modify
-it under the terms as Perl itself.
