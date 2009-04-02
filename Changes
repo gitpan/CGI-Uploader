@@ -1,5 +1,9 @@
 Revision history for Perl extension CGI::Uploader.
 
+2.17 Thu Apr  2 11:43:50 EDT 2009
+    [BUG FIXES]
+    - Small but fatal typo fix from 2.16 release cycle. 
+
 2.16 Thu Apr  2 11:36:40 EDT 2009
 
     [BUG FIXES]

@@ -2,11 +2,11 @@ package CGI::Uploader::Transform::ImageMagick;
 
 use base 'Exporter';
 use File::Temp 'tempfile';
-use Params::Validate ':all/';
+use Params::Validate ':all';
 use Carp::Assert;
 use vars qw(@EXPORT $VERSION);
 
-$VERSION = 2.16;
+$VERSION = 2.17;
 
 @EXPORT = qw(&gen_thumb);
 
