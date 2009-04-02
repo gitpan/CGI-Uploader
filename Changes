@@ -1,26 +1,34 @@
 Revision history for Perl extension CGI::Uploader.
 
-2.90_02 Fri Dec 12 13:04:00 EST 2008
-		- Redesign the handling of the transform option and the generate method.
-		  Document and patch sample code to match
+2.16 Thu Apr  2 11:36:40 EDT 2009
 
-2.90_01 Thu Nov 27 10:51:00 EST 2008
-		- Rewrite all code. New API.
-		- Change EDT in this file to EST because the date parser rejects EDT
+    [BUG FIXES]
+    - Using 'transform_method' to tranform an upload in place was broken.
+    - Now use File::Spec instead of hardcoding "/" as a path separator. (Ron Savage) 
+    - Use binmode() on the right file handle (Ron Savage)
+    - upload_id was hardcoded in one place instead of using up_table_map (Ron Savage)
 
-2.15 Sun Jul 15 07:21:24 EST 2007
+    [DOCUMENTATION]
+    - Quit recommending SQL::Abstract in the Cookbook (but we use it internally)
+
+    [INTERNAL]
+    - Mark "Image::Size" as a requirement, if only to get tests to stop failing.
+      It's only really required if  you use the Image::Magick transformations. 
+
+
+2.15 Sun Jul 15 07:21:24 EDT 2007
     - no functionality changes
 
     [INTERNAL]
     - improved importing code style.
     - Clarify docs regarding file_scheme vs. file_name (Jaldhar)
 
-2.14 Thu May 24 13:19:27 EST 2007
+2.14 Thu May 24 13:19:27 EDT 2007
 
     [BUG FIXES]
     - Avoid SQL error when two column names are the same by giving explicit table name.
 
-2.13 Mon Apr  9 22:39:54 EST 2007
+2.13 Mon Apr  9 22:39:54 EDT 2007
 
     [BUG FIXES]	
     - Better Mac OS X detection (Jeff MacDonald)
